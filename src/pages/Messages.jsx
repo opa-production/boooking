@@ -287,7 +287,7 @@ export default function Messages() {
   return (
     <div className="page">
       <div className="container wide">
-        <div className={`msg-layout${listOpen ? ' list-open' : ''}`}>
+        <div className="msg-layout">
           {listOpen && (
             <div className="msg-scrim" onClick={() => setListOpen(false)} aria-hidden="true" />
           )}
