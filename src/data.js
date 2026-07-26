@@ -1,4 +1,4 @@
-// Shared constants and date/price helpers for bookings.ardena.co.ke.
+// Shared constants and date/price helpers for booking.ardena.co.ke.
 // All data (cars, auth, wishlist, bookings, payments, messages) comes from
 // api.ardena.xyz — see src/api.js and src/cars.js. Notifications are still mock.
 

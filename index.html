@@ -16,7 +16,7 @@
          (package com.ardena.client) for link handling / app indexing. The
          in-app prompt itself is a custom banner (AppBanner) so both platforms
          get the same styled "continue in app" nudge. -->
-    <link rel="alternate" href="android-app://com.ardena.client/https/bookings.ardena.co.ke/" />
+    <link rel="alternate" href="android-app://com.ardena.client/https/booking.ardena.co.ke/" />
 
     <!-- Open Graph / social share -->
     <meta property="og:type" content="website" />
@@ -26,7 +26,13 @@
       property="og:description"
       content="Browse verified hosts, book by the day, and pay securely — insurance included and 24/7 support."
     />
-    <meta property="og:image" content="/src/assets/logo.png" />
+    <!-- Absolute URL, and served from public/ so the filename survives the
+         build unhashed — scrapers (WhatsApp, Facebook, Slack) can't resolve a
+         relative og:image and won't follow a name that changes each deploy. -->
+    <meta property="og:image" content="https://booking.ardena.co.ke/og-image.png" />
+    <meta property="og:image:width" content="1553" />
+    <meta property="og:image:height" content="1150" />
+    <meta property="og:image:alt" content="Ardena" />
     <meta name="twitter:card" content="summary" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

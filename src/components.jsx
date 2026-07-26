@@ -353,7 +353,7 @@ export function AppBanner() {
 
   // Android: open the app if it's installed (App Links), else land on Play.
   const androidHref =
-    'intent://bookings.ardena.co.ke/#Intent;scheme=https;package=com.ardena.client;' +
+    'intent://booking.ardena.co.ke/#Intent;scheme=https;package=com.ardena.client;' +
     'S.browser_fallback_url=' +
     encodeURIComponent('https://play.google.com/store/apps/details?id=com.ardena.client') +
     ';end';
