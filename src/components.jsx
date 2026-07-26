@@ -344,15 +344,6 @@ export function AppBanner() {
       stored = null;
     }
     if (stored === '1') return;
-
-    // Chromium answers this directly and honestly; Safari/Firefox leave it
-    // undefined, so only a hard `false` is treated as "definitely a desktop".
-    if (navigator.userAgentData?.mobile === false) return;
-
-    // A mouse means a laptop, whatever the user agent claims — this is what
-    // catches desktop browsers running in "request mobile site" mode.
-    if (!window.matchMedia('(pointer: coarse)').matches) return;
-
     const ua = navigator.userAgent || '';
     if (/android/i.test(ua)) setPlatform('android');
     else if (/iphone|ipad|ipod/i.test(ua)) setPlatform('ios');
