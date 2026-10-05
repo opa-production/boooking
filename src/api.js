@@ -433,15 +433,6 @@ export function addMpesaMethod(name, mpesaNumber, isDefault = false) {
   });
 }
 
-/** Paystack card: no card details stored — user enters them on Paystack's page. */
-export function addCardMethod(name = 'Card', isDefault = false) {
-  return request('/client/payment-methods/card-paystack', {
-    method: 'POST',
-    body: { name, is_default: isDefault },
-    auth: true,
-  });
-}
-
 export function deletePaymentMethod(id) {
   return request(`/client/payment-methods/${id}`, { method: 'DELETE', auth: true });
 }
@@ -450,13 +441,16 @@ export function setDefaultPaymentMethod(id) {
   return request(`/client/payment-methods/${id}/default`, { method: 'PUT', auth: true });
 }
 
-/** M-Pesa STK / Paystack card. Card responses include redirect_url. */
+/**
+ * M-Pesa STK (a saved M-Pesa method id) or Paystack card (no id: Paystack
+ * collects the card on its own page, so nothing is saved on our side).
+ * Card responses include redirect_url.
+ */
 export function processPayment(bookingId, paymentMethodId) {
-  return request('/client/payments/process', {
-    method: 'POST',
-    body: { booking_id: bookingId, payment_method_id: paymentMethodId },
-    auth: true,
-  });
+  const body = paymentMethodId != null
+    ? { booking_id: bookingId, payment_method_id: paymentMethodId }
+    : { booking_id: bookingId, method_type: 'card' };
+  return request('/client/payments/process', { method: 'POST', body, auth: true });
 }
 
 /** Poll with one of: { checkout_request_id } | { paystack_reference } | { booking_id }. */

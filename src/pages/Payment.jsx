@@ -91,24 +91,21 @@ export default function Payment() {
     return booking;
   };
 
-  /** Reuse a saved method that matches, otherwise create one — mirrors the app. */
+  /**
+   * M-Pesa: reuse the saved method for this number, otherwise create one.
+   * Card: nothing to save — Paystack takes the card on its page — so null,
+   * which tells processPayment to send method_type "card".
+   */
   const ensureMethod = async () => {
+    if (method !== 'mpesa') return null;
     const existing = await api.listPaymentMethods().catch(() => null);
     const methods = existing?.payment_methods || existing?.methods || existing || [];
-    if (method === 'mpesa') {
-      const number = normalizePhone(phone);
-      const match = Array.isArray(methods)
-        ? methods.find((m) => m.method_type === 'mpesa' && normalizePhone(m.mpesa_number) === number)
-        : null;
-      if (match) return match.id;
-      const created = await api.addMpesaMethod('M-Pesa', number);
-      return created.id;
-    }
-    const card = Array.isArray(methods)
-      ? methods.find((m) => ['card', 'visa', 'mastercard'].includes(m.method_type))
+    const number = normalizePhone(phone);
+    const match = Array.isArray(methods)
+      ? methods.find((m) => m.method_type === 'mpesa' && normalizePhone(m.mpesa_number) === number)
       : null;
-    if (card) return card.id;
-    const created = await api.addCardMethod('Card');
+    if (match) return match.id;
+    const created = await api.addMpesaMethod('M-Pesa', number);
     return created.id;
   };
 
