@@ -81,4 +81,18 @@ API.md            Backend API contract used by this site
 ## Deploying
 
 `npm run build` produces a static `dist/` — host it anywhere (Vercel, Netlify,
-nginx). Hash routing means no rewrite rules are needed.
+nginx). Hash routing means no rewrite rules are needed for the site itself.
+
+### Car share links (Vercel)
+
+The Ardena app shares cars as `https://booking.ardena.co.ke/cars/:id` (a real
+path, not `/#/…`, because nothing after `#` reaches a server). `vercel.json`
+rewrites that path to the function in `api/car.js`, which:
+
+- redirects people to `/#/cars/:id`;
+- gives link-preview crawlers (WhatsApp, iMessage, Telegram, …) that car's
+  Open Graph tags, so the chat shows its photo, name and price.
+
+Check it with `curl -A "WhatsApp/2.23" https://booking.ardena.co.ke/cars/<id>`
+(should print `og:` tags) or the Facebook Sharing Debugger. If Cloudflare's bot
+protection is on for the domain, allow these crawlers through.
