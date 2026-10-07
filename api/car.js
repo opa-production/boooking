@@ -68,7 +68,7 @@ function previewPage(car, id) {
 <meta name="twitter:description" content="${esc(description)}">
 <meta name="twitter:image" content="${esc(image)}">
 <link rel="canonical" href="${esc(pageUrl)}">
-<script>location.replace(${JSON.stringify(`/#/cars/${encodeURIComponent(id)}`).replace(/</g, '\u003c')});</script>
+<script>location.replace(${JSON.stringify(`/#/cars/${encodeURIComponent(id)}`)});</script>
 </head><body><a href="${esc(`${SITE}/#/cars/${encodeURIComponent(id)}`)}">${esc(title)}</a></body></html>`;
 }
 
@@ -90,6 +90,8 @@ export default async function handler(req, res) {
   const car = id ? await loadCar(id) : null;
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+  // Never cached: the edge cache keys on the URL, not the user agent, so a
+  // cached card would be served to people too.
+  res.setHeader('Cache-Control', 'no-store');
   return res.end(previewPage(car, id));
 }
