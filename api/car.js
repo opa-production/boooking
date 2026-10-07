@@ -17,6 +17,11 @@ const SITE = 'https://booking.ardena.co.ke';
 const FALLBACK_IMAGE = `${SITE}/og-share.jpg`; // 1200×630 JPEG, ~12 KB
 const PREVIEWERS = /whatsapp|facebookexternalhit|facebot|twitterbot|telegrambot|slackbot|linkedinbot|discordbot|applebot|pinterest|skypeuripreview|googlebot|bingbot|embedly|redditbot/i;
 
+// WhatsApp's own in-app browser says "WhatsApp" too, but a real browser's
+// user agent starts with "Mozilla/"; the WhatsApp link fetcher's never does.
+const IN_APP_BROWSER = /whatsapp|FBAN|FBAV|Instagram/i;
+const isPreviewer = (ua) => PREVIEWERS.test(ua) && !(/^Mozilla\//.test(ua) && IN_APP_BROWSER.test(ua));
+
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const ksh = (n) => `KSh ${Math.round(Number(n) || 0).toLocaleString('en-KE')}`;
 
@@ -63,6 +68,7 @@ function previewPage(car, id) {
 <meta name="twitter:description" content="${esc(description)}">
 <meta name="twitter:image" content="${esc(image)}">
 <link rel="canonical" href="${esc(pageUrl)}">
+<script>location.replace(${JSON.stringify(`/#/cars/${encodeURIComponent(id)}`).replace(/</g, '\u003c')});</script>
 </head><body><a href="${esc(`${SITE}/#/cars/${encodeURIComponent(id)}`)}">${esc(title)}</a></body></html>`;
 }
 
@@ -71,7 +77,7 @@ export default async function handler(req, res) {
   const ua = req.headers['user-agent'] || '';
 
   // People: straight to the car's page in the site.
-  if (!PREVIEWERS.test(ua)) {
+  if (!isPreviewer(ua)) {
     res.statusCode = 302;
     res.setHeader('Location', id ? `/#/cars/${encodeURIComponent(id)}` : '/');
     res.setHeader('Cache-Control', 'no-store');
@@ -79,6 +85,8 @@ export default async function handler(req, res) {
   }
 
   // Crawlers: the car's card. Always 200 — a 404 leaves the chat card blank.
+  // The page also redirects with script, in case a person ever lands on it
+  // (crawlers don't run it).
   const car = id ? await loadCar(id) : null;
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
