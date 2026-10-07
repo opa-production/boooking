@@ -3,6 +3,7 @@ import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useApp } from './store.jsx';
 import { useTheme, toggleTheme } from './theme.js';
 import { formatKES } from './data.js';
+import { deliveryBadge } from './cars.js';
 import logoUrl from './assets/logo.svg';
 import logomarkUrl from './assets/logomark.svg';
 import blueMarkUrl from './assets/blue.png';
@@ -33,6 +34,8 @@ import {
   SunIcon,
   MoonIcon,
   XIcon,
+  SteeringIcon,
+  UsersIcon,
 } from './icons.jsx';
 
 /** Floating back arrow, far left — shown on pages that have a page to go back to. */
@@ -195,10 +198,17 @@ export function CarCard({ car }) {
   const { wishlist, toggleWish } = useApp();
   const navigate = useNavigate();
   const wished = wishlist.has(car.id);
+  const delivery = deliveryBadge(car);
   return (
     <Link to={`/cars/${car.id}`} className="car-card">
       <div className="car-photo">
         <CarPhoto car={car} />
+        {(delivery || car.payOnPickupAvailable) && (
+          <div className="car-badges">
+            {delivery && <span className="car-badge">{delivery}</span>}
+            {car.payOnPickupAvailable && <span className="car-badge">Pay on pickup</span>}
+          </div>
+        )}
         <button
           className="wish-btn"
           aria-label="Save to wishlist"
@@ -283,6 +293,12 @@ function AccountMenu() {
           </button>
           <button className="menu-item" onClick={() => go('/trips')}>
             <SuitcaseIcon size={17} /> My trips
+          </button>
+          <button className="menu-item" onClick={() => go('/chauffeurs')}>
+            <UsersIcon size={17} /> Hire a driver
+          </button>
+          <button className="menu-item" onClick={() => go('/drive')}>
+            <SteeringIcon size={17} /> Drive with Ardena
           </button>
           <button className="menu-item" onClick={() => go('/messages')}>
             <ChatIcon size={17} /> Messages
@@ -411,6 +427,9 @@ export function Header() {
           <NavLink to="/trips" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             My trips
           </NavLink>
+          <NavLink to="/chauffeurs" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            Hire a driver
+          </NavLink>
           <ThemeButton />
           <AccountMenu />
         </nav>
@@ -463,6 +482,12 @@ export function Footer() {
               </li>
               <li>
                 <Link to="/trips">My trips</Link>
+              </li>
+              <li>
+                <Link to="/chauffeurs">Hire a driver</Link>
+              </li>
+              <li>
+                <Link to="/drive">Drive with Ardena</Link>
               </li>
               <li>
                 <Link to="/wishlist">Wishlist</Link>

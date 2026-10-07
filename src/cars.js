@@ -41,6 +41,14 @@ export function mapCar(c) {
     features: c.features || [],
     rules: c.rules,
     isRentersFavourite: Boolean(c.is_renters_favourite),
+    // Delivery: the host brings the car to the renter (and collects it from there).
+    deliveryAvailable: Boolean(c.delivery_available),
+    deliveryCities: (c.delivery_cities || []).map((d) => ({
+      city: d.city,
+      fee: Number(d.fee) || 0,
+      free: Boolean(d.free),
+    })),
+    payOnPickupAvailable: Boolean(c.pay_on_pickup_available),
     host: {
       id: c.host_id,
       name: c.host_name || 'Ardena host',
@@ -64,7 +72,7 @@ export function hostingDuration(iso) {
   return `${years} yr${years > 1 ? 's' : ''}`;
 }
 
-// Host avatars resolved from Supabase storage when the API has none.
+// Host avatars resolved by the backend's avatar lookup when the listing has none.
 const hostAvatarCache = new Map();
 
 export function useHostAvatar(hostId, existingUrl) {
@@ -245,6 +253,14 @@ export function mapBooking(b) {
     depositStatus: b.deposit_status,
     depositRefunded: b.deposit_refunded_amount,
     total: b.total_price,
+    deliveryFee: b.delivery_fee || 0,
+    // { city, address, latitude, longitude, fee, collection_included } | null
+    delivery: b.delivery || null,
+    paymentMode: b.payment_mode || 'full',
+    // What the first payment charges: the total, or the upfront part on pay on pickup.
+    amountDueNow: b.amount_due_now ?? b.total_price,
+    // { upfront_amount, balance_amount, balance_status, can_pay_balance_in_app, ... } | null
+    payOnPickup: b.pay_on_pickup || null,
     cancellationReason: b.cancellation_reason,
     refundPolicyReason: b.refund_policy_reason,
     requiresHandoverCode: Boolean(b.requires_handover_code),
@@ -303,4 +319,16 @@ export function unavailableDateSet(availability) {
     }
   }
   return days;
+}
+
+/** Listing badge text for delivery: "Free delivery" when every city is free. */
+export function deliveryBadge(car) {
+  if (!car.deliveryAvailable) return null;
+  const cities = car.deliveryCities || [];
+  return cities.length && cities.every((d) => d.free) ? 'Free delivery' : 'Delivery';
+}
+
+/** "Free" or "KES 1,500" for one delivery city. */
+export function deliveryFeeLabel(d) {
+  return d.free || !d.fee ? 'Free' : `KES ${Number(d.fee).toLocaleString('en-KE')}`;
 }

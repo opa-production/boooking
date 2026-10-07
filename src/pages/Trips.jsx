@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { formatKES } from '../data.js';
 import { fmtShort } from '../Calendar.jsx';
 import { mapBooking, useCars, ratingLabel } from '../cars.js';
 import { CarPhoto, EmptyState } from '../components.jsx';
 import { listBookings, deleteBookingRecord } from '../api.js';
 import { useToast } from '../toast.jsx';
+import { DriverHiresList } from './Chauffeurs.jsx';
 import {
   MapPinIcon,
   SteeringIcon,
@@ -23,6 +24,8 @@ const PAST = ['completed', 'cancelled', 'rejected'];
 export default function Trips() {
   const navigate = useNavigate();
   const toast = useToast();
+  const [params, setParams] = useSearchParams();
+  const tab = params.get('tab') === 'drivers' ? 'drivers' : 'cars';
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -73,9 +76,28 @@ export default function Trips() {
       <div className="container" style={{ maxWidth: 1240 }}>
         <div className="trips-layout">
           <div>
-            <h2 className="plain-label">Past trips</h2>
+            <div className="nots-tabs trips-tabs" role="tablist">
+              <button
+                role="tab"
+                aria-selected={tab === 'cars'}
+                className={`nots-tab${tab === 'cars' ? ' active' : ''}`}
+                onClick={() => setParams({}, { replace: true })}
+              >
+                Cars
+              </button>
+              <button
+                role="tab"
+                aria-selected={tab === 'drivers'}
+                className={`nots-tab${tab === 'drivers' ? ' active' : ''}`}
+                onClick={() => setParams({ tab: 'drivers' }, { replace: true })}
+              >
+                Drivers
+              </button>
+            </div>
 
-            {loading ? (
+            {tab === 'drivers' ? (
+              <DriverHiresList />
+            ) : loading ? (
               <div className="past-panel">
                 <div className="past-row" aria-hidden="true">
                   <div className="pic img-skel" style={{ position: 'relative' }} />

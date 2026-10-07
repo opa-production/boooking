@@ -7,21 +7,45 @@ import payingVideo from '../assets/payment.webm';
 import { useApp } from '../store.jsx';
 import { useScrollLock } from '../useScrollLock.js';
 import * as api from '../api.js';
+import {
+  ensureMpesaMethod,
+  pollPayment,
+  openPaystack,
+  onPaymentReturn,
+  MPESA_POLL_TRIES,
+  CARD_POLL_TRIES,
+} from '../payments.js';
+import { clearPendingDriverHire } from '../driverHandoff.js';
 import { PhoneIcon, CreditCardIcon } from '../icons.jsx';
 
-const POLL_INTERVAL_MS = 3500;
-const MPESA_POLL_TRIES = 40; // ~2.3 minutes
-const CARD_POLL_TRIES = 120; // ~7 minutes (user is on Paystack's page)
-
-function normalizePhone(raw) {
-  const digits = String(raw || '').replace(/\D/g, '');
-  if (digits.startsWith('254')) return digits;
-  if (digits.startsWith('0')) return '254' + digits.slice(1);
-  return '254' + digits;
+/** The POST /client/bookings body for the trip chosen on the previous step. */
+function bookingPayload(state) {
+  const payload = {
+    car_id: Number(state.car.id),
+    start_date: `${state.pickupDate}T${state.pickupTime || '10:00'}:00`,
+    end_date: `${state.dropoffDate}T${state.dropoffTime || '10:00'}:00`,
+    pickup_time: state.pickupTime,
+    return_time: state.dropoffTime,
+    damage_waiver_enabled: state.damageWaiver,
+    drive_type: state.driveType,
+    check_in_preference: state.checkIn,
+    special_requirements: state.notes || null,
+    payment_mode: state.paymentMode || 'full',
+  };
+  if (state.delivery) {
+    // The host delivers to and collects from this address: no pickup/return points.
+    payload.delivery = state.delivery;
+  } else {
+    payload.pickup_location = state.pickupLocation;
+    payload.return_location = state.dropoffLocation;
+    payload.dropoff_same_as_pickup = state.pickupLocation === state.dropoffLocation;
+  }
+  if (state.chauffeurBookingId) payload.chauffeur_booking_id = state.chauffeurBookingId;
+  return payload;
 }
 
 export default function Payment() {
-  const { state } = useLocation();
+  const { state, key } = useLocation();
   const navigate = useNavigate();
   const { user } = useApp();
 
@@ -31,16 +55,49 @@ export default function Payment() {
   const [phase, setPhase] = useState('idle');
   const [statusText, setStatusText] = useState('');
   const [error, setError] = useState('');
-  // Booking created on the first attempt and reused on retries.
-  const bookingRef = useRef(null);
+  // The booking is created when this page opens, so every amount shown is the
+  // server's. It's kept in the history entry: a reload or Back/Forward reuses it.
+  const [booking, setBooking] = useState(state?.booking || null);
+  const [createError, setCreateError] = useState('');
+  const creating = useRef(null);
   const cancelled = useRef(false);
+  const wake = useRef(null);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    cancelled.current = false;
+    return () => {
       cancelled.current = true;
-    },
-    []
-  );
+    };
+  }, []);
+
+  // The Paystack tab came back: check the status now instead of at the next tick.
+  useEffect(() => onPaymentReturn(() => wake.current && wake.current()), []);
+
+  const createBooking = () => {
+    if (creating.current) return creating.current;
+    setCreateError('');
+    creating.current = api
+      .createBooking(bookingPayload(state))
+      .then((created) => {
+        if (state.chauffeurBookingId) clearPendingDriverHire();
+        setBooking(created);
+        navigate('.', { replace: true, state: { ...state, booking: created } });
+        return created;
+      })
+      .catch((e) => {
+        setCreateError(e.message || 'Couldn’t create your booking. Please try again.');
+        throw e;
+      })
+      .finally(() => {
+        creating.current = null;
+      });
+    return creating.current;
+  };
+
+  useEffect(() => {
+    if (state?.car && !booking) createBooking().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
   // Lock the page behind the processing overlay.
   useScrollLock(phase === 'working' || phase === 'waiting');
@@ -58,103 +115,80 @@ export default function Payment() {
   }
 
   const busy = phase === 'working' || phase === 'waiting';
-  const payValid = method === 'mpesa' ? phone.replace(/\D/g, '').length >= 9 : true;
-  const totalDue = bookingRef.current?.total_price ?? state.total;
+  const ready = Boolean(booking);
+  const payValid = ready && (method === 'mpesa' ? phone.replace(/\D/g, '').length >= 9 : true);
+  // What this payment charges: the total, or only the upfront part on pay on pickup.
+  const totalDue = booking ? booking.amount_due_now ?? booking.total_price : null;
+  const split = booking?.payment_mode === 'pay_on_pickup' ? booking.pay_on_pickup : null;
+  const delivery = booking?.delivery || null;
+  const amountText = totalDue != null ? formatKES(totalDue) : '…';
 
   // Shared by the in-card button and the mobile sticky bar so they never drift.
-  const payLabel =
-    phase === 'working'
+  const payLabel = !ready
+    ? createError
+      ? 'Booking not created'
+      : 'Preparing your booking…'
+    : phase === 'working'
       ? 'Starting payment…'
       : phase === 'waiting'
         ? 'Waiting for payment…'
         : phase === 'failed'
-          ? `Try again — pay ${formatKES(totalDue)}`
-          : `Pay ${formatKES(totalDue)}`;
+          ? `Try again — pay ${amountText}`
+          : `Pay ${amountText}`;
 
-  const ensureBooking = async () => {
-    if (bookingRef.current) return bookingRef.current;
-    const booking = await api.createBooking({
-      car_id: Number(car.id),
-      start_date: `${state.pickupDate}T${state.pickupTime || '10:00'}:00`,
-      end_date: `${state.dropoffDate}T${state.dropoffTime || '10:00'}:00`,
-      pickup_time: state.pickupTime,
-      return_time: state.dropoffTime,
-      pickup_location: state.pickupLocation,
-      return_location: state.dropoffLocation,
-      dropoff_same_as_pickup: state.pickupLocation === state.dropoffLocation,
-      damage_waiver_enabled: state.damageWaiver,
-      drive_type: state.driveType,
-      check_in_preference: state.checkIn,
-      special_requirements: state.notes || null,
-    });
-    bookingRef.current = booking;
-    return booking;
-  };
-
-  /**
-   * M-Pesa: reuse the saved method for this number, otherwise create one.
-   * Card: nothing to save — Paystack takes the card on its page — so null,
-   * which tells processPayment to send method_type "card".
-   */
-  const ensureMethod = async () => {
-    if (method !== 'mpesa') return null;
-    const existing = await api.listPaymentMethods().catch(() => null);
-    const methods = existing?.payment_methods || existing?.methods || existing || [];
-    const number = normalizePhone(phone);
-    const match = Array.isArray(methods)
-      ? methods.find((m) => m.method_type === 'mpesa' && normalizePhone(m.mpesa_number) === number)
-      : null;
-    if (match) return match.id;
-    const created = await api.addMpesaMethod('M-Pesa', number);
-    return created.id;
-  };
-
-  const pollStatus = async (params, tries) => {
-    for (let i = 0; i < tries; i++) {
-      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-      if (cancelled.current) return;
-      let status;
-      try {
-        status = await api.getPaymentStatus(params);
-      } catch {
-        continue; // transient — keep polling
-      }
-      if (cancelled.current) return;
-      if (status.status === 'completed') {
-        navigate(`/confirmed/${status.booking_id}`, { replace: true });
-        return;
-      }
-      if (status.status === 'failed' || status.status === 'cancelled') {
-        setPhase('failed');
-        setError(status.message || `Payment ${status.status}. You can try again.`);
-        return;
-      }
+  const finish = (status) => {
+    if (!status) return; // left the page
+    if (status.status === 'completed') {
+      navigate(`/confirmed/${status.booking_id}`, { replace: true });
+      return;
     }
     setPhase('failed');
-    setError('We haven’t received the payment confirmation yet. You can try again.');
+    setError(
+      status.status === 'timeout'
+        ? 'We haven’t received the payment confirmation yet. You can try again.'
+        : status.message || `Payment ${status.status}. You can try again.`
+    );
   };
 
   const payNow = async () => {
-    if (busy) return;
+    if (busy || !booking) return;
     setError('');
     setPhase('working');
-    setStatusText('Creating your booking…');
+    setStatusText('Contacting the payment provider…');
     try {
-      const booking = await ensureBooking();
-      setStatusText('Contacting the payment provider…');
-      const methodId = await ensureMethod();
-      const result = await api.processPayment(booking.booking_id, methodId);
+      const methodId = method === 'mpesa' ? await ensureMpesaMethod(phone) : null;
+      let result;
+      try {
+        result = await api.processPayment(booking.booking_id, methodId);
+      } catch (e) {
+        // An abandoned checkout is cancelled after a while: start a fresh booking.
+        if ([400, 404, 409].includes(e.status) && /cancel|expired|not found|status/i.test(e.message)) {
+          setBooking(null);
+          navigate('.', { replace: true, state: { ...state, booking: null } });
+        }
+        throw e;
+      }
 
       if (method === 'mpesa') {
         setPhase('waiting');
         setStatusText('STK push sent. Enter your M-Pesa PIN on your phone to pay.');
-        await pollStatus({ checkout_request_id: result.transaction_id }, MPESA_POLL_TRIES);
+        finish(
+          await pollPayment(
+            { checkout_request_id: result.transaction_id },
+            { tries: MPESA_POLL_TRIES, isCancelled: () => cancelled.current, wake }
+          )
+        );
       } else {
         if (!result.redirect_url) throw new Error('Card payment could not be started.');
-        window.open(result.redirect_url, '_blank', 'noopener');
+        if (!openPaystack(result.redirect_url)) return; // this tab is going to Paystack
         setPhase('waiting');
         setStatusText('Complete the card payment in the Paystack tab. We’ll confirm here.');
-        await pollStatus({ paystack_reference: result.transaction_id }, CARD_POLL_TRIES);
+        finish(
+          await pollPayment(
+            { paystack_reference: result.transaction_id },
+            { tries: CARD_POLL_TRIES, isCancelled: () => cancelled.current, wake }
+          )
+        );
       }
     } catch (e) {
       if (cancelled.current) return;
@@ -168,14 +202,7 @@ export default function Payment() {
       {busy && (
         <div className="pay-overlay" role="status" aria-live="polite">
           <div className="pay-overlay-card">
-            <video
-              className="pay-anim"
-              src={payingVideo}
-              autoPlay
-              loop
-              muted
-              playsInline
-            />
+            <video className="pay-anim" src={payingVideo} autoPlay loop muted playsInline />
             <b className="pay-overlay-title">
               {phase === 'working' ? 'Setting up your payment' : 'Waiting for confirmation'}
             </b>
@@ -195,6 +222,23 @@ export default function Payment() {
 
         <div className="booking-layout">
           <div className="form-card">
+            {createError && (
+              <div className="notice error-notice" style={{ marginTop: 0, marginBottom: 18 }}>
+                <b>{createError}</b>
+                <div className="notice-actions">
+                  <button className="btn-secondary btn-sm" onClick={() => navigate(-1)}>
+                    Change trip details
+                  </button>
+                  <button
+                    className="btn-secondary btn-sm"
+                    onClick={() => createBooking().catch(() => {})}
+                  >
+                    Try again
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="field">
               <label>Pay with</label>
               <button
@@ -282,8 +326,18 @@ export default function Payment() {
             </button>
 
             <div className="notice">
-              Payments are held by <b>Ardena</b> and released to the host after pickup. Your
-              booking is confirmed the moment the payment goes through.
+              {split ? (
+                <>
+                  You pay <b>{formatKES(split.upfront_amount)}</b> now to confirm the booking, and{' '}
+                  <b>{formatKES(split.balance_amount)}</b> when you get the car. Your pickup code
+                  appears once the balance is paid.
+                </>
+              ) : (
+                <>
+                  Payments are held by <b>Ardena</b> and released to the host after pickup. Your
+                  booking is confirmed the moment the payment goes through.
+                </>
+              )}
             </div>
           </div>
 
@@ -294,55 +348,101 @@ export default function Payment() {
                 <div>
                   <b>{car.name}</b>
                   <div className="car-meta">
-                    {state.driveType === 'self' ? 'Self drive' : 'With chauffeur'}
+                    {state.driverName
+                      ? `Driven by ${state.driverName}`
+                      : state.driveType === 'self'
+                        ? 'Self drive'
+                        : 'With chauffeur'}
                   </div>
                 </div>
               </div>
               <div className="breakdown">
                 <div className="row">
-                  <span>Pickup</span>
+                  <span>{delivery || state.delivery ? 'Delivery' : 'Pickup'}</span>
                   <span>
                     {formatDateLong(state.pickupDate)} · {state.pickupTime}
                   </span>
                 </div>
                 <div className="row">
-                  <span>Drop-off</span>
+                  <span>{delivery || state.delivery ? 'Collection' : 'Drop-off'}</span>
                   <span>
                     {formatDateLong(state.dropoffDate)} · {state.dropoffTime}
                   </span>
                 </div>
                 <div className="row">
-                  <span>Location</span>
-                  <span>{state.pickupLocation}</span>
-                </div>
-                <div className="row">
+                  <span>{delivery || state.delivery ? 'Address' : 'Location'}</span>
                   <span>
-                    Rental ({state.days} day{state.days === 1 ? '' : 's'})
-                  </span>
-                  <span>{formatKES(state.subtotal)}</span>
-                </div>
-                {state.damageWaiver && (
-                  <div className="row">
-                    <span>Damage waiver</span>
-                    <span>{formatKES(state.waiver)}</span>
-                  </div>
-                )}
-                {state.deposit > 0 && (
-                  <div className="row">
-                    <span>Refundable deposit</span>
-                    <span>{formatKES(state.deposit)}</span>
-                  </div>
-                )}
-                <div className="row total">
-                  <span>Total due now</span>
-                  <span key={totalDue} className="total-pop">
-                    {formatKES(totalDue)}
+                    {delivery
+                      ? delivery.address
+                      : state.delivery
+                        ? state.delivery.address || `Your location, ${state.delivery.city}`
+                        : state.pickupLocation}
                   </span>
                 </div>
-                {state.deposit > 0 && (
-                  <p className="breakdown-note">
-                    Includes a {formatKES(state.deposit)} deposit, refunded to you after the trip.
-                  </p>
+
+                {!booking ? (
+                  <>
+                    <div className="skel-line" style={{ width: '100%', height: 16 }} />
+                    <div className="skel-line" style={{ width: '70%', height: 16 }} />
+                  </>
+                ) : (
+                  <>
+                    <div className="row">
+                      <span>
+                        Rental ({booking.rental_days} day{booking.rental_days === 1 ? '' : 's'})
+                      </span>
+                      <span>{formatKES(booking.base_price)}</span>
+                    </div>
+                    {booking.damage_waiver_fee > 0 && (
+                      <div className="row">
+                        <span>Damage waiver</span>
+                        <span>{formatKES(booking.damage_waiver_fee)}</span>
+                      </div>
+                    )}
+                    {booking.deposit_amount > 0 && (
+                      <div className="row">
+                        <span>Refundable deposit</span>
+                        <span>{formatKES(booking.deposit_amount)}</span>
+                      </div>
+                    )}
+                    {delivery && (
+                      <div className="row">
+                        <span>Delivery &amp; collection</span>
+                        <span>{booking.delivery_fee > 0 ? formatKES(booking.delivery_fee) : 'Free'}</span>
+                      </div>
+                    )}
+                    {split ? (
+                      <>
+                        <div className="row">
+                          <span>Trip total</span>
+                          <span>{formatKES(booking.total_price)}</span>
+                        </div>
+                        <div className="row total">
+                          <span>Pay now</span>
+                          <span key={totalDue} className="total-pop">
+                            {formatKES(split.upfront_amount)}
+                          </span>
+                        </div>
+                        <div className="row">
+                          <span>Pay at pickup</span>
+                          <span>{formatKES(split.balance_amount)}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="row total">
+                        <span>Total due now</span>
+                        <span key={totalDue} className="total-pop">
+                          {formatKES(totalDue)}
+                        </span>
+                      </div>
+                    )}
+                    {booking.deposit_amount > 0 && (
+                      <p className="breakdown-note">
+                        Includes a {formatKES(booking.deposit_amount)} deposit, refunded to you
+                        after the trip.
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -353,8 +453,8 @@ export default function Payment() {
       <StickyActionBar
         info={
           <>
-            <span className="sab-label">Total due now</span>
-            <b>{formatKES(totalDue)}</b>
+            <span className="sab-label">{split ? 'Pay now' : 'Total due now'}</span>
+            <b>{amountText}</b>
           </>
         }
       >

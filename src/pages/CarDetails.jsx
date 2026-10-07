@@ -8,6 +8,8 @@ import {
   noteRecentlyViewed,
   hostingDuration,
   useHostAvatar,
+  deliveryBadge,
+  deliveryFeeLabel,
 } from '../cars.js';
 import { fmtShort } from '../Calendar.jsx';
 import { CarPhoto, BackButton, StickyActionBar } from '../components.jsx';
@@ -34,6 +36,8 @@ import {
   PhoneIcon,
   IdCardIcon,
   XIcon,
+  CarIcon,
+  ClockIcon,
 } from '../icons.jsx';
 
 // Approximate city centres — used to place the pickup map until per-car
@@ -551,6 +555,20 @@ export default function CarDetails() {
               <StarIcon size={15} /> {ratingLabel(car)} · {reviewCount} review
               {reviewCount === 1 ? '' : 's'} · {car.locationName}, {car.city}
             </div>
+            {(car.deliveryAvailable || car.payOnPickupAvailable) && (
+              <div className="detail-badges">
+                {car.deliveryAvailable && (
+                  <span className="car-badge inline">
+                    <CarIcon size={14} /> {deliveryBadge(car)}
+                  </span>
+                )}
+                {car.payOnPickupAvailable && (
+                  <span className="car-badge inline">
+                    <ClockIcon size={14} /> Pay on pickup
+                  </span>
+                )}
+              </div>
+            )}
             {car.description && (
               <p className="dashed-card car-desc">{car.description}</p>
             )}
@@ -675,8 +693,44 @@ export default function CarDetails() {
                   </span>
                   <b>{car.locationName}</b>
                 </div>
+                {car.payOnPickupAvailable && (
+                  <div className="info-row">
+                    <span>
+                      <ClockIcon size={17} /> Pay on pickup
+                    </span>
+                    <b>Available</b>
+                  </div>
+                )}
+                {car.payOnPickupAvailable && (
+                  <p className="info-note">
+                    Pay Ardena’s fee (plus any deposit and delivery fee) when you book, and the rest
+                    when you get the car.
+                  </p>
+                )}
               </div>
             </div>
+
+            {car.deliveryAvailable && (
+              <div className="section detail-divide">
+                <h2>Delivery</h2>
+                <div className="detail-list">
+                  {car.deliveryCities.map((d) => (
+                    <div className="info-row" key={d.city}>
+                      <span>
+                        <CarIcon size={17} /> {d.city}
+                      </span>
+                      <b style={d.free ? { color: 'var(--success)' } : undefined}>
+                        {deliveryFeeLabel(d)}
+                      </b>
+                    </div>
+                  ))}
+                  <p className="info-note">
+                    Delivered to you and collected from the same address. Choose Delivery at
+                    checkout.
+                  </p>
+                </div>
+              </div>
+            )}
 
             <PickupMap car={car} />
 
@@ -817,6 +871,18 @@ export default function CarDetails() {
                 <span>Minimum age</span>
                 <b>{car.minAge} years</b>
               </div>
+              {car.deliveryAvailable && (
+                <div className="widget-row">
+                  <span>Delivery</span>
+                  <b>{deliveryBadge(car) === 'Free delivery' ? 'Free' : 'Available'}</b>
+                </div>
+              )}
+              {car.payOnPickupAvailable && (
+                <div className="widget-row">
+                  <span>Pay on pickup</span>
+                  <b>Available</b>
+                </div>
+              )}
               <div className="widget-row">
                 <span>Rating</span>
                 <b>

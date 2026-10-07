@@ -35,7 +35,7 @@ function loadGsi() {
 /** "Continue with Google" via Google Identity Services. The backend takes the
  * ID token at POST /client/auth/google, so we render the official GIS button
  * (the ID-token flow requires it — custom buttons only get OAuth access tokens). */
-function GoogleButton({ onSignedIn, onError }) {
+export function GoogleButton({ onSignedIn, onError }) {
   const { signInWithGoogle } = useApp();
   const slotRef = useRef(null);
   const [failed, setFailed] = useState(false);
@@ -91,12 +91,12 @@ function FormError({ children }) {
 }
 
 /** Per-field validation message shown directly under its input. */
-function FieldError({ children }) {
+export function FieldError({ children }) {
   if (!children) return null;
   return <span className="field-error">{children}</span>;
 }
 
-function PasswordInput({ value, onChange, placeholder = '••••••••', error }) {
+export function PasswordInput({ value, onChange, placeholder = '••••••••', error }) {
   const [show, setShow] = useState(false);
   return (
     <div className={`control${error ? ' err' : ''}`}>

@@ -58,10 +58,12 @@ export class ApiError extends Error {
   }
 }
 
-/** FastAPI errors: { detail: "message" } or a list of field errors on 422. */
+/** FastAPI errors: { detail: "message" }, or on 422 a list of field errors
+ * plus `message` (the first problem in words). Both are written to be shown as is. */
 function errorMessage(data, status) {
   const d = data && data.detail;
   if (typeof d === 'string') return d;
+  if (data && typeof data.message === 'string' && data.message) return data.message;
   if (Array.isArray(d) && d.length) {
     const first = d[0];
     const field = Array.isArray(first.loc) ? first.loc[first.loc.length - 1] : null;
@@ -73,7 +75,8 @@ function errorMessage(data, status) {
 
 async function request(path, { method = 'GET', body, auth = false, retry = true } = {}) {
   const headers = {};
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const isForm = typeof FormData !== 'undefined' && body instanceof FormData;
+  if (body !== undefined && !isForm) headers['Content-Type'] = 'application/json';
   if (auth) {
     if (!tokens || !tokens.access_token) throw new ApiError('Not signed in', 401, null);
     headers.Authorization = `Bearer ${tokens.access_token}`;
@@ -84,7 +87,7 @@ async function request(path, { method = 'GET', body, auth = false, retry = true 
     res = await fetch(BASE + path, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
     });
   } catch {
     throw new ApiError('Network error — check your connection and try again.', 0, null);
@@ -245,6 +248,33 @@ export function getCancellationPreview(bookingId) {
 /** Removes a past booking from the client's history (soft delete server-side). */
 export function deleteBookingRecord(bookingId) {
   return request(`/client/bookings/${bookingId}`, { method: 'DELETE', auth: true });
+}
+
+// ---------- pay on pickup (auth) ----------
+
+/** Pay the rest of a pay-on-pickup booking: a saved M-Pesa method id, or null for card
+ * (Paystack page, back to this website). Poll getPaymentStatus with the returned id. */
+export function payBookingBalance(bookingId, paymentMethodId) {
+  const body =
+    paymentMethodId != null ? { paymentMethodId } : { methodType: 'card', return_to: 'web' };
+  return request(`/client/bookings/${bookingId}/balance/pay`, { method: 'POST', body, auth: true });
+}
+
+/** Renter paid the host in person. The response is the handover-codes object. */
+export function markBalancePaidToHost(bookingId) {
+  return request(`/client/bookings/${bookingId}/balance/paid-to-host`, {
+    method: 'POST',
+    auth: true,
+  });
+}
+
+/** Something's wrong with the car at pickup: opens a support chat and tells the host. */
+export function reportHandoverProblem(bookingId, message) {
+  return request(`/client/bookings/${bookingId}/handover-problem`, {
+    method: 'POST',
+    body: { message },
+    auth: true,
+  });
 }
 
 /** Renter's pickup/return handover codes for a booking. */
@@ -447,9 +477,10 @@ export function setDefaultPaymentMethod(id) {
  * Card responses include redirect_url.
  */
 export function processPayment(bookingId, paymentMethodId) {
+  // return_to: Paystack sends the payer back to /payment/result on this site, not the app.
   const body = paymentMethodId != null
     ? { booking_id: bookingId, payment_method_id: paymentMethodId }
-    : { booking_id: bookingId, method_type: 'card' };
+    : { booking_id: bookingId, method_type: 'card', return_to: 'web' };
   return request('/client/payments/process', { method: 'POST', body, auth: true });
 }
 
@@ -458,70 +489,143 @@ export function getPaymentStatus(params) {
   return request('/client/payments/status?' + new URLSearchParams(params), { auth: true });
 }
 
-// ---------- profile avatar fallback (Supabase storage) ----------
-// The app stores avatars in the client-profile-media bucket as
-// {clientId}/client_{clientId}_avatar_{ts}.{ext} and only sometimes writes
-// avatar_url back to the profile — so when avatar_url is empty we look the
-// file up directly, same as the client0 app does. Anon key is public by design.
+// ---------- avatar fallback (public, no token) ----------
+// Profiles and listings don't always carry avatar_url; the backend looks the
+// file up in storage (and saves it back), the same lookups the apps use.
 
-const SUPABASE_URL = 'https://mvzddrdfkgydoitrblpq.supabase.co';
-const SUPABASE_ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12emRkcmRma2d5ZG9pdHJibHBxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY5NzUwMjIsImV4cCI6MjA4MjU1MTAyMn0.g1Y4gOHwNyk_Wff_JtIZborgOsGfSccVASEikPR05gI';
-const AVATAR_BUCKET = 'client-profile-media';
-
-/** Host avatars live in host-profile-images as user_{hostId}/avatar_*.{jpg…} —
- * the cars API often has host_avatar_url null even when a photo exists there. */
-export async function findHostAvatar(hostId) {
+async function avatarLookup(path) {
   try {
-    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/list/host-profile-images`, {
-      method: 'POST',
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        prefix: `user_${hostId}`,
-        limit: 100,
-        sortBy: { column: 'created_at', order: 'desc' },
-      }),
-    });
-    if (!res.ok) return null;
-    const files = await res.json();
-    if (!Array.isArray(files)) return null;
-    const file = files.find((f) => /^avatar_.*\.(jpg|jpeg|png|webp)$/i.test(f.name));
-    if (!file) return null;
-    return `${SUPABASE_URL}/storage/v1/object/public/host-profile-images/user_${hostId}/${file.name}`;
+    const data = await request(path);
+    return (data && data.avatar_url) || null;
   } catch {
     return null;
   }
 }
 
-export async function findClientAvatar(clientId) {
-  try {
-    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${AVATAR_BUCKET}`, {
-      method: 'POST',
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        prefix: String(clientId),
-        limit: 100,
-        sortBy: { column: 'created_at', order: 'desc' },
-      }),
-    });
-    if (!res.ok) return null;
-    const files = await res.json();
-    if (!Array.isArray(files)) return null;
-    const pattern = new RegExp(`^client_${clientId}_avatar_.*\\.(jpg|jpeg|png|webp)$`, 'i');
-    const file = files.find((f) => pattern.test(f.name));
-    if (!file) return null;
-    return `${SUPABASE_URL}/storage/v1/object/public/${AVATAR_BUCKET}/${clientId}/${file.name}`;
-  } catch {
-    return null;
+export function findHostAvatar(hostId) {
+  return avatarLookup(`/hosts/${hostId}/avatar-lookup`);
+}
+
+export function findClientAvatar(clientId) {
+  return avatarLookup(`/client/${clientId}/avatar-lookup`);
+}
+
+// ---------- driving licence on the profile (auth) ----------
+
+/** 404 when no licence is on file. */
+export function getDrivingLicense() {
+  return request('/client/driving-license', { auth: true });
+}
+
+/** { license_number, category, issue_date, expiry_date }. Editing resets is_verified. */
+export function saveDrivingLicense(fields, exists) {
+  return request('/client/driving-license', {
+    method: exists ? 'PUT' : 'POST',
+    body: fields,
+    auth: true,
+  });
+}
+
+// ---------- Ardena Chauffeurs: hiring a driver (auth) ----------
+
+export function searchChauffeurs(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v);
   }
+  const query = qs.toString();
+  return request('/chauffeurs' + (query ? `?${query}` : ''), { auth: true });
+}
+
+export function getChauffeur(id) {
+  return request(`/chauffeurs/${encodeURIComponent(id)}`, { auth: true });
+}
+
+export function getChauffeurReviews(id, page = 1) {
+  return request(`/chauffeurs/${encodeURIComponent(id)}/reviews?page=${page}`, { auth: true });
+}
+
+/** The server prices the hire; show the response's `total`. A 409 detail says why not. */
+export function createChauffeurHire(payload) {
+  return request('/chauffeur-bookings', { method: 'POST', body: payload, auth: true });
+}
+
+export function listChauffeurHires() {
+  return request('/me/chauffeur-bookings', { auth: true });
+}
+
+export function getChauffeurHire(id) {
+  return request(`/me/chauffeur-bookings/${encodeURIComponent(id)}`, { auth: true });
+}
+
+/** M-Pesa with a saved method id, or card (null id) back to this website. */
+export function payChauffeurHire(id, paymentMethodId) {
+  const body =
+    paymentMethodId != null
+      ? { method: 'mpesa', payment_method_id: paymentMethodId }
+      : { method: 'card', return_to: 'web' };
+  return request(`/me/chauffeur-bookings/${encodeURIComponent(id)}/pay`, {
+    method: 'POST',
+    body,
+    auth: true,
+  });
+}
+
+export function cancelChauffeurHire(id, reason) {
+  return request(`/me/chauffeur-bookings/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    body: { reason: reason || null },
+    auth: true,
+  });
+}
+
+export function reviewChauffeurHire(id, rating, text) {
+  return request(`/me/chauffeur-bookings/${encodeURIComponent(id)}/review`, {
+    method: 'POST',
+    body: { rating, text: text || null },
+    auth: true,
+  });
+}
+
+export function getChauffeurThreads() {
+  return request('/chauffeur-threads?role=client', { auth: true });
+}
+
+export function getChauffeurMessages(hireId) {
+  return request(`/chauffeur-bookings/${encodeURIComponent(hireId)}/messages`, { auth: true });
+}
+
+export function sendChauffeurMessage(hireId, text) {
+  return request(`/chauffeur-bookings/${encodeURIComponent(hireId)}/messages`, {
+    method: 'POST',
+    body: { text },
+    auth: true,
+  });
+}
+
+// ---------- Ardena Chauffeurs: applying to drive (auth) ----------
+
+/** 404 = hasn't applied yet. */
+export function getChauffeurApplication() {
+  return request('/chauffeur/application', { auth: true });
+}
+
+export function getChauffeurPrefill() {
+  return request('/chauffeur/application/prefill', { auth: true });
+}
+
+/** One photo per call. kind: photo | licence_photo | id_photo | good_conduct_photo.
+ * Returns { id, url, kind }; send `url` back unchanged in the application. */
+export function uploadChauffeurDocument(file, kind) {
+  const form = new FormData();
+  form.append('file', file, file.name || `${kind}.jpg`);
+  form.append('kind', kind);
+  return request('/chauffeur/documents', { method: 'POST', body: form, auth: true });
+}
+
+/** Re-submitting replaces the previous application. */
+export function submitChauffeurApplication(payload) {
+  return request('/chauffeur/application', { method: 'POST', body: payload, auth: true });
 }
 
 // Password reset — 3-step OTP flow (6 digits, 5-minute expiry).

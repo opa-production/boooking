@@ -1,14 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { CITIES, MIN_RENTAL_DAYS, addDays } from '../data.js';
 import { useCars } from '../cars.js';
+import { listCars } from '../api.js';
 import { CarCard, CarCardSkeleton, EmptyState } from '../components.jsx';
 import { DateRangeCalendar, fmtShort } from '../Calendar.jsx';
-import { CheckIcon, MapPinIcon, XIcon } from '../icons.jsx';
+import { CheckIcon, MapPinIcon, XIcon, UsersIcon, SteeringIcon, ChevronRightIcon } from '../icons.jsx';
 import { useScrollLock } from '../useScrollLock.js';
 
 /** Mirrors the GET /cars filter surface (min_price/max_price, body_type,
  * min_seats, transmission, fuel_type, driver_option). Applied client-side
- * against the already-loaded catalogue. */
+ * against the already-loaded catalogue, except "Delivered to me" in a chosen
+ * city, which asks the API (GET /cars?delivers_to=City). */
 const EMPTY_FILTERS = {
   minPrice: 0,
   maxPrice: 0,
@@ -17,6 +20,7 @@ const EMPTY_FILTERS = {
   transmission: '',
   fuels: [],
   drive: '',
+  delivery: false,
 };
 
 const PRICE_BANDS = [
@@ -40,7 +44,9 @@ const DRIVE_OPTIONS = [
   { label: 'With chauffeur', value: 'chauffeur' },
 ];
 
-function matchesFilters(c, f) {
+function matchesFilters(c, f, deliversHere) {
+  if (f.delivery && !c.deliveryAvailable) return false;
+  if (f.delivery && deliversHere && !deliversHere.has(c.id)) return false;
   if (f.minPrice && c.pricePerDay < f.minPrice) return false;
   if (f.maxPrice && c.pricePerDay > f.maxPrice) return false;
   if (f.types.length && !f.types.includes(c.type)) return false;
@@ -59,14 +65,22 @@ function countActiveFilters(f) {
     (f.minSeats ? 1 : 0) +
     (f.transmission ? 1 : 0) +
     (f.fuels.length ? 1 : 0) +
-    (f.drive ? 1 : 0)
+    (f.drive ? 1 : 0) +
+    (f.delivery ? 1 : 0)
   );
 }
 
 /** Flatten the active filters into individually-removable chips shown under the
  * search bar. Each `clear` returns the filters with just that facet removed. */
-function activeFilterChips(f) {
+function activeFilterChips(f, city) {
   const chips = [];
+  if (f.delivery) {
+    chips.push({
+      key: 'delivery',
+      label: city && city !== 'All cities' ? `Delivered in ${city}` : 'Delivery',
+      clear: (d) => ({ ...d, delivery: false }),
+    });
+  }
   if (f.minPrice || f.maxPrice) {
     const band = PRICE_BANDS.find((b) => b.min === f.minPrice && b.max === f.maxPrice);
     const label = band
@@ -103,7 +117,7 @@ function Chip({ on, onClick, children }) {
 
 /** Near-fullscreen filter sheet. Keeps a local draft so nothing changes on the
  * page until "Show cars" is pressed; the button shows the live match count. */
-function FilterModal({ open, onClose, baseCars, options, applied, onApply }) {
+function FilterModal({ open, onClose, baseCars, options, applied, onApply, city, deliversHere }) {
   const [draft, setDraft] = useState(applied);
   useScrollLock(open);
 
@@ -128,7 +142,7 @@ function FilterModal({ open, onClose, baseCars, options, applied, onApply }) {
   const setOne = (key, val) => setDraft((d) => ({ ...d, [key]: d[key] === val ? '' : val }));
   const setPrice = (min, max) => setDraft((d) => ({ ...d, minPrice: min, maxPrice: max }));
 
-  const count = baseCars.filter((c) => matchesFilters(c, draft)).length;
+  const count = baseCars.filter((c) => matchesFilters(c, draft, deliversHere)).length;
 
   return (
     <div className="filter-overlay" onClick={onClose}>
@@ -218,6 +232,18 @@ function FilterModal({ open, onClose, baseCars, options, applied, onApply }) {
               </div>
             </div>
           )}
+
+          <div className="filter-section">
+            <h3>Delivery</h3>
+            <div className="chip-row">
+              <Chip
+                on={draft.delivery}
+                onClick={() => setDraft((d) => ({ ...d, delivery: !d.delivery }))}
+              >
+                {city && city !== 'All cities' ? `Delivered to me in ${city}` : 'Delivered to me'}
+              </Chip>
+            </div>
+          </div>
 
           <div className="filter-section">
             <h3>Drive option</h3>
@@ -339,9 +365,39 @@ export default function Home() {
     [allCars, city]
   );
 
+  // "Delivered to me": in a chosen city, the API says which cars deliver there.
+  const [deliversHere, setDeliversHere] = useState(null);
+  const wantsDelivery = filters.delivery || filterOpen;
+  useEffect(() => {
+    if (!wantsDelivery || city === 'All cities') {
+      setDeliversHere(null);
+      return undefined;
+    }
+    let on = true;
+    listCars({ delivers_to: city, limit: 100 })
+      .then((data) => {
+        if (on) setDeliversHere(new Set((data.cars || []).map((c) => String(c.id))));
+      })
+      .catch(() => {
+        if (on) setDeliversHere(null);
+      });
+    return () => {
+      on = false;
+    };
+  }, [wantsDelivery, city]);
+
+  // Delivery widens "where": a car based elsewhere that delivers here still counts.
+  const placeCars = useMemo(
+    () =>
+      filters.delivery && deliversHere
+        ? allCars.filter((car) => deliversHere.has(car.id))
+        : cityCars,
+    [allCars, cityCars, filters.delivery, deliversHere]
+  );
+
   const cars = useMemo(
-    () => cityCars.filter((c) => matchesFilters(c, filters)),
-    [cityCars, filters]
+    () => placeCars.filter((c) => matchesFilters(c, filters, deliversHere)),
+    [placeCars, filters, deliversHere]
   );
 
   const shelves = useMemo(() => buildShelves(cars), [cars]);
@@ -356,7 +412,7 @@ export default function Home() {
   );
 
   const activeFilters = countActiveFilters(filters);
-  const activeChips = activeFilterChips(filters);
+  const activeChips = activeFilterChips(filters, city);
 
   const whenLabel =
     pickup && dropoff ? `${fmtShort(pickup)} – ${fmtShort(dropoff)}` : pickup ? `${fmtShort(pickup)} – ?` : 'Add dates';
@@ -506,12 +562,37 @@ export default function Home() {
             ))}
           </>
         )}
+
+        <section className="promo-duo" aria-label="Ardena Chauffeurs">
+          <Link to="/chauffeurs" className="promo-card">
+            <span className="promo-icon">
+              <UsersIcon size={20} />
+            </span>
+            <span className="promo-text">
+              <b>Hire a driver</b>
+              <span>Verified Ardena chauffeurs for your car or ours, by the hour or the day.</span>
+            </span>
+            <ChevronRightIcon size={18} />
+          </Link>
+          <Link to="/drive" className="promo-card">
+            <span className="promo-icon">
+              <SteeringIcon size={20} />
+            </span>
+            <span className="promo-text">
+              <b>Drive with Ardena</b>
+              <span>Earn as a chauffeur. Apply in a few minutes, no account needed to start.</span>
+            </span>
+            <ChevronRightIcon size={18} />
+          </Link>
+        </section>
       </div>
 
       <FilterModal
         open={filterOpen}
         onClose={() => setFilterOpen(false)}
-        baseCars={cityCars}
+        baseCars={deliversHere ? allCars : cityCars}
+        city={city}
+        deliversHere={deliversHere}
         options={filterOptions}
         applied={filters}
         onApply={(f) => {

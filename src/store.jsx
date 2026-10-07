@@ -40,8 +40,8 @@ export function AppProvider({ children }) {
   const adoptProfile = (profile) => {
     api.storeClient(profile);
     setClient(profile);
-    // The app writes avatars to Supabase storage but doesn't always write
-    // avatar_url back to the profile — resolve it the same way the app does.
+    // Older profiles don't always carry avatar_url; the backend's avatar
+    // lookup finds the file (and saves it back), the same as the app.
     if (profile && !profile.avatar_url && profile.id) {
       api.findClientAvatar(profile.id).then((url) => {
         if (!url) return;

@@ -17,6 +17,9 @@ import Messages from './pages/Messages.jsx';
 import Wishlist from './pages/Wishlist.jsx';
 import Payments from './pages/Payments.jsx';
 import Notifications from './pages/Notifications.jsx';
+import PaymentResult from './pages/PaymentResult.jsx';
+import Drive from './pages/Drive.jsx';
+import { FindDrivers, DriverProfile, HireDriver, DriverHireDetails } from './pages/Chauffeurs.jsx';
 
 function ScrollToTop() {
   const { pathname } = useLocation();
@@ -31,7 +34,9 @@ function ScrollToTop() {
 function RequireAuth({ children }) {
   const { user } = useApp();
   const location = useLocation();
-  if (!user) return <Navigate to="/login" state={{ next: location.pathname }} replace />;
+  if (!user) {
+    return <Navigate to="/login" state={{ next: location.pathname + location.search }} replace />;
+  }
   return children;
 }
 
@@ -50,6 +55,9 @@ const HIDE_FOOTER = [
   /^\/payments$/,
   /^\/notifications$/,
   /^\/messages$/,
+  /^\/payment\/result$/,
+  /^\/drive$/,
+  /^\/chauffeurs\/[^/]+\/hire$/,
 ];
 
 function FooterGate() {
@@ -127,6 +135,12 @@ export default function App() {
           <Route path="/forgot" element={<Forgot />} />
           <Route path="/profile" element={<RequireAuth><Profile /></RequireAuth>} />
           <Route path="/license" element={<RequireAuth><License /></RequireAuth>} />
+          <Route path="/payment/result" element={<PaymentResult />} />
+          <Route path="/drive" element={<Drive />} />
+          <Route path="/chauffeurs" element={<RequireAuth><FindDrivers /></RequireAuth>} />
+          <Route path="/chauffeurs/:id" element={<RequireAuth><DriverProfile /></RequireAuth>} />
+          <Route path="/chauffeurs/:id/hire" element={<RequireAuth><HireDriver /></RequireAuth>} />
+          <Route path="/driver-hires/:id" element={<RequireAuth><DriverHireDetails /></RequireAuth>} />
           <Route path="*" element={<NotFound />} />
         </Routes>
         <FooterGate />

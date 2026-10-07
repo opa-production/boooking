@@ -7,11 +7,22 @@ import {
   daysBetween,
   addDays,
 } from '../data.js';
-import { useCar, unavailableDateSet } from '../cars.js';
+import { useCar, unavailableDateSet, deliveryFeeLabel } from '../cars.js';
+import { getPendingDriverHire, clearPendingDriverHire } from '../driverHandoff.js';
 import { getCarAvailability } from '../api.js';
 import { CarPhoto, Toggle, BackButton, BookingSteps, StickyActionBar } from '../components.jsx';
 import { DateRangeCalendar, fmtShort } from '../Calendar.jsx';
-import { CalendarIcon, MapPinIcon, SteeringIcon, UsersIcon, PhoneIcon } from '../icons.jsx';
+import {
+  CalendarIcon,
+  MapPinIcon,
+  SteeringIcon,
+  UsersIcon,
+  PhoneIcon,
+  CarIcon,
+  CreditCardIcon,
+  ClockIcon,
+  XIcon,
+} from '../icons.jsx';
 
 const TIMES = ['07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '14:00', '16:00', '18:00'];
 
@@ -106,6 +117,20 @@ function BookingForm({ car }) {
   const damageWaiver = protection === 'waiver';
   const [notes, setNotes] = useState('');
   const [unavailable, setUnavailable] = useState(() => new Set());
+  // Pickup at the host's spot, or delivered to the renter (and collected from there).
+  const [handoff, setHandoff] = useState('pickup');
+  const [deliveryCity, setDeliveryCity] = useState(
+    car.deliveryCities.length === 1 ? car.deliveryCities[0].city : ''
+  );
+  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [pin, setPin] = useState(null); // { latitude, longitude } from "Use my current location"
+  const [locating, setLocating] = useState(false);
+  const [locateError, setLocateError] = useState('');
+  const [paymentMode, setPaymentMode] = useState('full');
+  // A driver hired first (Ardena Chauffeurs) who will drive this car.
+  const [driverHire, setDriverHire] = useState(getPendingDriverHire);
+  const delivering = handoff === 'delivery';
+  const deliveryChoice = car.deliveryCities.find((d) => d.city === deliveryCity) || null;
 
   useEffect(() => {
     const onClick = (e) => {
@@ -140,22 +165,54 @@ function BookingForm({ car }) {
     return false;
   }, [pickupDate, dropoffDate, unavailable]);
 
+  // An estimate to choose with; the payment page shows the server's own figures.
   const pricing = useMemo(() => {
     const subtotal = days * car.pricePerDay;
     const waiver = damageWaiver ? days * DAMAGE_WAIVER_PRICE_PER_DAY : 0;
     const deposit = car.deposit || 0;
-    return { subtotal, waiver, deposit, total: subtotal + waiver + deposit };
-  }, [car, days, damageWaiver]);
+    const deliveryFee = delivering && deliveryChoice ? deliveryChoice.fee : 0;
+    return { subtotal, waiver, deposit, deliveryFee, total: subtotal + waiver + deposit + deliveryFee };
+  }, [car, days, damageWaiver, delivering, deliveryChoice]);
 
   const tooShort = Boolean(dropoffDate) && days < minDays;
   const dropoffPoint = sameDropoff ? car.locationName : dropoffLocation;
+  const splitPay = paymentMode === 'pay_on_pickup';
+  const totalLabel = splitPay ? 'Trip total' : 'Total due now';
+
+  // Asked only on tap; the server turns the coordinates into an address.
+  const useMyLocation = () => {
+    if (!navigator.geolocation) {
+      setLocateError('Your browser can’t share your location. Type the address instead.');
+      return;
+    }
+    setLocating(true);
+    setLocateError('');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setPin({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+        setLocating(false);
+      },
+      (err) => {
+        setLocating(false);
+        setLocateError(
+          err.code === 1
+            ? 'Location is blocked for this site. Allow it, or type the address.'
+            : 'Couldn’t get your location. Type the address instead.'
+        );
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
+    );
+  };
 
   // Everything blocking "Continue to payment", so the button can say why.
   const missing = [];
   if (!dropoffDate) missing.push('trip dates');
   else if (tooShort) missing.push(`at least ${minDays} day${minDays > 1 ? 's' : ''}`);
   if (rangeBlocked) missing.push('available dates');
-  if (!dropoffPoint) missing.push('a drop-off point');
+  if (delivering) {
+    if (!deliveryChoice) missing.push('a delivery city');
+    if (!deliveryAddress.trim() && !pin) missing.push('a delivery address');
+  } else if (!dropoffPoint) missing.push('a drop-off point');
   if (!driveType) missing.push('drive type');
   if (!protection) missing.push('protection');
   if (!checkIn) missing.push('check-in');
@@ -171,6 +228,17 @@ function BookingForm({ car }) {
         dropoffTime,
         pickupLocation: car.locationName,
         dropoffLocation: dropoffPoint,
+        delivery: delivering
+          ? {
+              city: deliveryChoice.city,
+              address: deliveryAddress.trim() || null,
+              ...(pin || {}),
+              source: pin ? 'current_location' : 'typed',
+            }
+          : null,
+        paymentMode,
+        chauffeurBookingId: driverHire?.id || null,
+        driverName: driverHire?.name || null,
         driveType,
         damageWaiver,
         checkIn,
@@ -258,38 +326,178 @@ function BookingForm({ car }) {
               </div>
             )}
 
-            <div className="field">
-              <label>Pickup location (set by host)</label>
-              <div className="control readonly">
-                <MapPinIcon size={17} style={{ color: 'var(--hint)' }} /> {car.locationName},{' '}
-                {car.city}
-              </div>
-            </div>
-
-            <div className="field">
-              <div className="toggle-row" style={{ marginBottom: 14 }}>
-                <div className="t-label">
-                  <b>Return to the same location</b>
-                  <span>Drop the car where you picked it up</span>
-                </div>
-                <Toggle on={sameDropoff} onChange={setSameDropoff} />
-              </div>
-              {!sameDropoff && (
-                <div className="control">
-                  <select
-                    value={dropoffLocation}
-                    onChange={(e) => setDropoffLocation(e.target.value)}
+            {car.deliveryAvailable && (
+              <div className="field">
+                <label>
+                  Getting the car <span className="choose-hint">choose one</span>
+                </label>
+                <div className="seg">
+                  <button
+                    type="button"
+                    className={`choice-btn${!delivering ? ' selected' : ''}`}
+                    onClick={() => setHandoff('pickup')}
                   >
-                    <option value="">Choose a drop-off point…</option>
-                    {NAKURU_LOCATIONS.map((l) => (
-                      <option key={l.id} value={l.name}>
-                        {l.name} — {l.address}
-                      </option>
-                    ))}
-                  </select>
+                    <span className="radio-dot" />
+                    <MapPinIcon size={16} /> Pickup
+                  </button>
+                  <button
+                    type="button"
+                    className={`choice-btn${delivering ? ' selected' : ''}`}
+                    onClick={() => setHandoff('delivery')}
+                  >
+                    <span className="radio-dot" />
+                    <CarIcon size={16} /> Delivery
+                  </button>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
+
+            {delivering ? (
+              <>
+                <div className="field">
+                  <label>Delivery city</label>
+                  <div className="control">
+                    <select value={deliveryCity} onChange={(e) => setDeliveryCity(e.target.value)}>
+                      <option value="">Choose a city…</option>
+                      {car.deliveryCities.map((d) => (
+                        <option key={d.city} value={d.city}>
+                          {d.city} · {deliveryFeeLabel(d)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="field">
+                  <label>Delivery address</label>
+                  <div className="control">
+                    <MapPinIcon size={17} style={{ color: 'var(--hint)' }} />
+                    <input
+                      placeholder={pin ? 'Add a note, e.g. Gate B, blue building' : 'Street, building or landmark'}
+                      value={deliveryAddress}
+                      maxLength={500}
+                      onChange={(e) => setDeliveryAddress(e.target.value)}
+                    />
+                  </div>
+                  <div className="locate-row">
+                    {pin ? (
+                      <span className="locate-done">
+                        <MapPinIcon size={14} /> Using your current location
+                        <button
+                          type="button"
+                          className="link"
+                          onClick={() => setPin(null)}
+                          aria-label="Stop using my location"
+                        >
+                          <XIcon size={13} />
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="link"
+                        onClick={useMyLocation}
+                        disabled={locating}
+                      >
+                        {locating ? 'Finding you…' : 'Use my current location'}
+                      </button>
+                    )}
+                  </div>
+                  {locateError && <span className="field-error">{locateError}</span>}
+                </div>
+                <div className="notice" style={{ marginTop: 0, marginBottom: 18 }}>
+                  Delivered to you and collected from the same address at the end of the trip.
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="field">
+                  <label>Pickup location (set by host)</label>
+                  <div className="control readonly">
+                    <MapPinIcon size={17} style={{ color: 'var(--hint)' }} /> {car.locationName},{' '}
+                    {car.city}
+                  </div>
+                </div>
+
+                <div className="field">
+                  <div className="toggle-row" style={{ marginBottom: 14 }}>
+                    <div className="t-label">
+                      <b>Return to the same location</b>
+                      <span>Drop the car where you picked it up</span>
+                    </div>
+                    <Toggle on={sameDropoff} onChange={setSameDropoff} />
+                  </div>
+                  {!sameDropoff && (
+                    <div className="control">
+                      <select
+                        value={dropoffLocation}
+                        onChange={(e) => setDropoffLocation(e.target.value)}
+                      >
+                        <option value="">Choose a drop-off point…</option>
+                        {NAKURU_LOCATIONS.map((l) => (
+                          <option key={l.id} value={l.name}>
+                            {l.name} — {l.address}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {car.payOnPickupAvailable && (
+              <div className="field">
+                <label>
+                  How you pay <span className="choose-hint">choose one</span>
+                </label>
+                <div className="seg">
+                  <button
+                    type="button"
+                    className={`choice-btn${!splitPay ? ' selected' : ''}`}
+                    onClick={() => setPaymentMode('full')}
+                  >
+                    <span className="radio-dot" />
+                    <CreditCardIcon size={16} /> Pay now
+                  </button>
+                  <button
+                    type="button"
+                    className={`choice-btn${splitPay ? ' selected' : ''}`}
+                    onClick={() => setPaymentMode('pay_on_pickup')}
+                  >
+                    <span className="radio-dot" />
+                    <ClockIcon size={16} /> Pay on pickup
+                  </button>
+                </div>
+                {splitPay && (
+                  <p className="field-hint">
+                    Pay Ardena’s fee{car.deposit ? ' and the deposit' : ''}
+                    {delivering ? ' and the delivery fee' : ''} now, and the rest when you get the
+                    car. You’ll see both amounts on the next step.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {driverHire && (
+              <div className="notice driver-hire-note" style={{ marginTop: 0, marginBottom: 18 }}>
+                <UsersIcon size={16} />
+                <span>
+                  <b>{driverHire.name || 'Your Ardena driver'}</b> will drive this car, so you
+                  don’t need a driving licence for this booking.
+                </span>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="Book without this driver"
+                  onClick={() => {
+                    clearPendingDriverHire();
+                    setDriverHire(null);
+                  }}
+                >
+                  <XIcon size={14} />
+                </button>
+              </div>
+            )}
 
             <div className="field">
               <label>
@@ -417,8 +625,14 @@ function BookingForm({ car }) {
                     <span>{formatKES(pricing.deposit)}</span>
                   </div>
                 )}
+                {delivering && deliveryChoice && (
+                  <div className="row">
+                    <span>Delivery &amp; collection</span>
+                    <span>{deliveryFeeLabel(deliveryChoice)}</span>
+                  </div>
+                )}
                 <div className="row total">
-                  <span>Total due now</span>
+                  <span>{totalLabel}</span>
                   <span key={pricing.total} className="total-pop">
                     {formatKES(pricing.total)}
                   </span>
@@ -426,6 +640,12 @@ function BookingForm({ car }) {
                 {pricing.deposit > 0 && (
                   <p className="breakdown-note">
                     Includes a {formatKES(pricing.deposit)} deposit, refunded to you after the trip.
+                  </p>
+                )}
+                {splitPay && (
+                  <p className="breakdown-note">
+                    Pay on pickup: part now, the rest when you get the car. Exact amounts on the
+                    next step.
                   </p>
                 )}
               </div>
@@ -451,7 +671,7 @@ function BookingForm({ car }) {
       <StickyActionBar
         info={
           <>
-            <span className="sab-label">Total due now</span>
+            <span className="sab-label">{totalLabel}</span>
             <b>{formatKES(pricing.total)}</b>
           </>
         }

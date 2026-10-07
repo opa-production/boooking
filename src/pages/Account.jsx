@@ -200,6 +200,219 @@ function fmtDate(iso) {
   });
 }
 
+// ---------- driving licence details (GET/POST/PUT /client/driving-license) ----------
+
+const LICENCE_CATEGORIES = ['A', 'A1', 'A2', 'A3', 'B', 'B1', 'B2', 'B3', 'C', 'C1', 'CE', 'D', 'D1', 'D2', 'D3', 'E', 'F', 'G'];
+
+function todayISO() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** No licence → "Add licence"; unverified → grey; verified & in date → green; expired → red. */
+function licenceBadge(dl) {
+  if (!dl) return { cls: 'lic-badge none', label: 'Add licence' };
+  if (dl.expiry_date && String(dl.expiry_date).slice(0, 10) < todayISO()) {
+    return { cls: 'lic-badge expired', label: 'Expired, update it' };
+  }
+  if (dl.is_verified) return { cls: 'lic-badge verified', label: 'Verified' };
+  return { cls: 'lic-badge pending', label: 'Not verified yet' };
+}
+
+function DrivingLicenceCard() {
+  const toast = useToast();
+  const [dl, setDl] = useState(undefined); // undefined = loading, null = none on file
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({ number: '', category: 'B', issue: '', expiry: '' });
+  const [confirmUnverify, setConfirmUnverify] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let on = true;
+    api
+      .getDrivingLicense()
+      .then((data) => {
+        if (on) setDl(data);
+      })
+      .catch(() => {
+        if (on) setDl(null);
+      });
+    return () => {
+      on = false;
+    };
+  }, []);
+
+  if (dl === undefined) {
+    return (
+      <div className="form-card" style={{ maxWidth: 640, marginBottom: 'var(--sp-5)' }}>
+        <div className="skel-line" style={{ width: '45%', height: 18, marginTop: 0 }} />
+        <div className="skel-line" style={{ width: '70%', height: 13 }} />
+      </div>
+    );
+  }
+
+  const badge = licenceBadge(dl);
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  const startEdit = () => {
+    setForm({
+      number: dl?.license_number || '',
+      category: dl?.category || 'B',
+      issue: dl?.issue_date ? String(dl.issue_date).slice(0, 10) : '',
+      expiry: dl?.expiry_date ? String(dl.expiry_date).slice(0, 10) : '',
+    });
+    setError('');
+    setConfirmUnverify(false);
+    setEditing(true);
+  };
+
+  const save = async () => {
+    if (saving) return;
+    if (!form.number.trim() || !form.category || !form.issue || !form.expiry) {
+      setError('Fill in the licence number, category and both dates.');
+      return;
+    }
+    // Editing a verified licence removes the badge until Ardena checks it again.
+    if (dl?.is_verified && !confirmUnverify) {
+      setConfirmUnverify(true);
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const saved = await api.saveDrivingLicense(
+        {
+          license_number: form.number.trim(),
+          category: form.category,
+          issue_date: form.issue,
+          expiry_date: form.expiry,
+        },
+        Boolean(dl)
+      );
+      setDl(saved);
+      setEditing(false);
+      setConfirmUnverify(false);
+      toast.success(dl ? 'Licence updated' : 'Licence added');
+    } catch (e) {
+      setError(e.message || 'Couldn’t save your licence. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="form-card" style={{ maxWidth: 640, marginBottom: 'var(--sp-5)' }}>
+      <div className="toggle-row" style={{ marginBottom: editing || dl ? 18 : 0 }}>
+        <div className="t-label">
+          <b>Driving licence</b>
+          <span>Needed for self-drive trips, same licence as in the app</span>
+        </div>
+        {dl ? (
+          <span className={badge.cls}>
+            {badge.label === 'Verified' && <CheckIcon size={13} />} {badge.label}
+          </span>
+        ) : (
+          !editing && (
+            <button className="btn-secondary btn-sm" onClick={startEdit}>
+              Add licence
+            </button>
+          )
+        )}
+      </div>
+
+      {dl && !editing && (
+        <>
+          <div className="two-col">
+            <InfoRow label="Licence number" value={dl.license_number} />
+            <InfoRow label="Category" value={dl.category} />
+            <InfoRow label="Issued" value={fmtDate(dl.issue_date)} />
+            <InfoRow label="Expires" value={fmtDate(dl.expiry_date)} />
+          </div>
+          {!dl.is_verified && dl.verification_notes && (
+            <div className="notice" style={{ marginTop: 0 }}>
+              {dl.verification_notes}
+            </div>
+          )}
+          <button className="btn-secondary" onClick={startEdit}>
+            {badge.cls.includes('expired') ? 'Update licence' : 'Edit licence'}
+          </button>
+        </>
+      )}
+
+      {editing && (
+        <>
+          <div className="two-col">
+            <div className="field">
+              <label>Licence number</label>
+              <div className="control">
+                <input
+                  value={form.number}
+                  onChange={set('number')}
+                  placeholder="e.g. B123456 or your ID number"
+                  maxLength={50}
+                />
+              </div>
+            </div>
+            <div className="field">
+              <label>Category</label>
+              <div className="control">
+                <select value={form.category} onChange={set('category')}>
+                  {LICENCE_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="field">
+              <label>Issue date</label>
+              <div className="control">
+                <input type="date" value={form.issue} max={todayISO()} onChange={set('issue')} />
+              </div>
+            </div>
+            <div className="field">
+              <label>Expiry date</label>
+              <div className="control">
+                <input type="date" value={form.expiry} onChange={set('expiry')} />
+              </div>
+            </div>
+          </div>
+
+          {confirmUnverify && (
+            <div className="notice" style={{ marginTop: 0, marginBottom: 'var(--sp-4)' }}>
+              <b>Changing your licence removes its Verified badge</b> until Ardena checks it again.
+              Save anyway?
+            </div>
+          )}
+          {error && (
+            <p style={{ color: 'var(--error)', fontSize: 'var(--fs-sm)', fontWeight: 700, marginBottom: 12 }}>
+              {error}
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
+            <button className="btn-primary" onClick={save} disabled={saving}>
+              {saving ? 'Saving…' : confirmUnverify ? 'Yes, save changes' : 'Save licence'}
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                setEditing(false);
+                setConfirmUnverify(false);
+              }}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function License() {
   const { user } = useApp();
   const [kyc, setKyc] = useState(null);
@@ -297,6 +510,7 @@ export function License() {
 
   return (
     <AccountLayout>
+      <DrivingLicenceCard />
       {status === 'approved' ? (
         <div className="form-card" style={{ maxWidth: 640 }}>
           <div className="toggle-row" style={{ marginBottom: 18 }}>

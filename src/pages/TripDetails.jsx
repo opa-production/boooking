@@ -25,7 +25,19 @@ import {
   listPaymentMethods,
   addMpesaMethod,
   getPaymentStatus,
+  payBookingBalance,
+  markBalancePaidToHost,
+  reportHandoverProblem,
 } from '../api.js';
+import {
+  ensureMpesaMethod,
+  defaultMpesaNumber,
+  pollPayment,
+  openPaystack,
+  onPaymentReturn,
+  MPESA_POLL_TRIES,
+  CARD_POLL_TRIES,
+} from '../payments.js';
 import {
   CalendarIcon,
   MapPinIcon,
@@ -39,6 +51,8 @@ import {
   ClockIcon,
   CopyIcon,
   RefreshIcon,
+  CarIcon,
+  FlagIcon,
 } from '../icons.jsx';
 
 const DEPOSIT_STATUS_LABEL = {
@@ -101,6 +115,10 @@ function HandoverPhase({ label, hint, phase, accent, onRefresh, refreshing }) {
             </button>
           </div>
         </>
+      ) : phase.state === 'awaiting_balance' ? (
+        <b className="handover-state">
+          <ClockIcon size={15} /> After the balance is paid
+        </b>
       ) : phase.state === 'used' ? (
         <b className="handover-state used">
           <CheckIcon size={15} /> Used
@@ -120,24 +138,12 @@ function HandoverPhase({ label, hint, phase, accent, onRefresh, refreshing }) {
  * Pickup code unlocks 24h before pickup; return code unlocks once the trip is
  * active. "New code" invalidates the previous one server-side.
  */
-function HandoverCard({ bookingId }) {
-  const [codes, setCodes] = useState(null);
+function HandoverCard({ bookingId, codes, setCodes }) {
   const [refreshing, setRefreshing] = useState('');
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    let on = true;
-    getHandoverCodes(bookingId)
-      .then((data) => {
-        if (on) setCodes(data);
-      })
-      .catch(() => {});
-    return () => {
-      on = false;
-    };
-  }, [bookingId]);
-
   if (!codes || !codes.requires_handover_code) return null;
+  const awaitingBalance = codes.pickup?.state === 'awaiting_balance';
 
   const refresh = async (phase) => {
     if (refreshing) return;
@@ -178,10 +184,330 @@ function HandoverCard({ bookingId }) {
         />
       </div>
       <p className="info-note" style={{ paddingTop: 'var(--sp-3)' }}>
-        Give the pickup code to your host when collecting the car, and the return code when you
-        bring it back — same codes as in the app. Getting a new code cancels the old one.
+        {awaitingBalance ? (
+          <>Your pickup code appears once the balance is paid.</>
+        ) : (
+          <>
+            Give the pickup code to your host when collecting the car, and the return code when
+            you bring it back — same codes as in the app. Getting a new code cancels the old one.
+          </>
+        )}
       </p>
       {error && <p className="info-note" style={{ color: 'var(--error)' }}>{error}</p>}
+    </div>
+  );
+}
+
+// ---------- delivery ----------
+
+/** Small map of the delivery address when the booking has coordinates. */
+function DeliveryMap({ delivery }) {
+  const { latitude: lat, longitude: lng } = delivery;
+  if (lat == null || lng == null) return null;
+  const d = 0.01;
+  const bbox = `${lng - d},${lat - d},${lng + d},${lat + d}`;
+  const src = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(
+    bbox
+  )}&layer=mapnik&marker=${lat},${lng}`;
+  return (
+    <div className="pickup-map trip-map">
+      <iframe title="Delivery address map" src={src} loading="lazy" />
+    </div>
+  );
+}
+
+// ---------- pay on pickup ----------
+
+/**
+ * Pay-on-pickup balance: what's left to pay, and the three things the renter
+ * can do once they're with the car (pay here, say they paid the host, or
+ * report a problem). The pickup code only appears once the balance is settled.
+ */
+function PayOnPickupCard({ booking, balance, onCodes, onPaid, onProblem }) {
+  const [mode, setMode] = useState(''); // '' | pay | host | problem
+  const [method, setMethod] = useState('mpesa');
+  const [phone, setPhone] = useState('');
+  const [phase, setPhase] = useState('idle'); // idle | working | waiting
+  const [message, setMessage] = useState('');
+  const [note, setNote] = useState('');
+  const [error, setError] = useState('');
+  const cancelled = React.useRef(false);
+  const wake = React.useRef(null);
+
+  useEffect(() => {
+    cancelled.current = false;
+    defaultMpesaNumber().then((n) => {
+      if (n) setPhone((p) => p || n);
+    });
+    const off = onPaymentReturn(() => wake.current && wake.current());
+    return () => {
+      cancelled.current = true;
+      off();
+    };
+  }, []);
+
+  const amount = formatKES(balance.balance_amount);
+
+  if (balance.balance_status !== 'pending') {
+    return (
+      <div className="section">
+        <h2>Pay on pickup</h2>
+        <div className="info-card">
+          <div className="info-row">
+            <span>
+              <CheckIcon size={17} style={{ color: 'var(--success)' }} />{' '}
+              {balance.balance_status === 'paid_to_host'
+                ? 'You paid the host at pickup'
+                : 'Balance paid'}
+            </span>
+            <b>{amount}</b>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const choose = (next) => {
+    setMode((m) => (m === next ? '' : next));
+    setError('');
+    setNote('');
+  };
+
+  const payHere = async () => {
+    if (phase !== 'idle') return;
+    setError('');
+    setNote('');
+    setPhase('working');
+    try {
+      const methodId = method === 'mpesa' ? await ensureMpesaMethod(phone) : null;
+      const result = await payBookingBalance(booking.id, methodId);
+      let params;
+      if (method === 'mpesa') {
+        setNote('STK push sent. Enter your M-Pesa PIN on your phone to pay.');
+        params = { checkout_request_id: result.checkout_request_id };
+      } else {
+        if (!result.redirect_url) throw new Error('Card payment could not be started.');
+        if (!openPaystack(result.redirect_url)) return;
+        setNote('Complete the card payment in the Paystack tab. We’ll confirm here.');
+        params = { paystack_reference: result.paystack_reference };
+      }
+      setPhase('waiting');
+      const status = await pollPayment(params, {
+        tries: method === 'mpesa' ? MPESA_POLL_TRIES : CARD_POLL_TRIES,
+        isCancelled: () => cancelled.current,
+        wake,
+      });
+      if (!status) return;
+      if (status.status === 'completed') {
+        setNote('');
+        setMode('');
+        onPaid();
+        return;
+      }
+      throw new Error(
+        status.status === 'timeout'
+          ? 'We haven’t received the payment confirmation yet. You can try again.'
+          : status.message || `Payment ${status.status}. You can try again.`
+      );
+    } catch (e) {
+      if (cancelled.current) return;
+      setNote('');
+      setError(e.message || 'Payment failed. Please try again.');
+    } finally {
+      if (!cancelled.current) setPhase('idle');
+    }
+  };
+
+  const paidHost = async () => {
+    if (phase !== 'idle') return;
+    setError('');
+    setPhase('working');
+    try {
+      // The response is the handover-codes object: the pickup code shows at once.
+      onCodes(await markBalancePaidToHost(booking.id));
+      setMode('');
+      onPaid();
+    } catch (e) {
+      setError(e.message || 'Couldn’t confirm that. Please try again.');
+    } finally {
+      setPhase('idle');
+    }
+  };
+
+  const sendProblem = async () => {
+    if (phase !== 'idle' || message.trim().length < 5) return;
+    setError('');
+    setPhase('working');
+    try {
+      const fresh = await reportHandoverProblem(booking.id, message.trim());
+      if (fresh && fresh.booking_id) onProblem(fresh);
+      setMessage('');
+      setMode('');
+      setNote('done');
+    } catch (e) {
+      setError(e.message || 'Couldn’t send that. Please try again.');
+    } finally {
+      setPhase('idle');
+    }
+  };
+
+  const busy = phase !== 'idle';
+
+  return (
+    <div className="section">
+      <h2>Pay on pickup</h2>
+      <div className="info-card">
+        <div className="info-row">
+          <span>
+            <CreditCardIcon size={17} /> Left to pay at pickup
+          </span>
+          <b style={{ fontSize: 'var(--fs-md)' }}>{amount} to pay at pickup</b>
+        </div>
+        <p className="info-note">
+          When you’re with the car and happy with it, settle the balance. Your pickup code appears
+          once it’s paid.
+        </p>
+
+        {balance.problem_reported && (
+          <p className="info-note" style={{ color: 'var(--warning)', fontWeight: 700 }}>
+            You reported a problem with the car. Ardena support is on it; don’t pay until it’s
+            sorted.
+          </p>
+        )}
+        {note === 'done' && (
+          <p className="info-note" style={{ color: 'var(--success)', fontWeight: 700 }}>
+            Sent. We’ve told your host and opened a chat with Ardena support.{' '}
+            <Link to="/messages" state={{ hostId: 'support' }} className="link">
+              Open the chat
+            </Link>
+          </p>
+        )}
+
+        <div className="balance-actions">
+          {balance.can_pay_balance_in_app && (
+            <button
+              className={`choice-btn${mode === 'pay' ? ' selected' : ''}`}
+              onClick={() => choose('pay')}
+              disabled={busy}
+            >
+              <CreditCardIcon size={16} /> Pay the rest here
+            </button>
+          )}
+          <button
+            className={`choice-btn${mode === 'host' ? ' selected' : ''}`}
+            onClick={() => choose('host')}
+            disabled={busy}
+          >
+            <CheckIcon size={16} /> I’ve received the car and paid the host
+          </button>
+          <button
+            className={`choice-btn${mode === 'problem' ? ' selected' : ''}`}
+            onClick={() => choose('problem')}
+            disabled={busy}
+          >
+            <FlagIcon size={16} /> Problem with the car
+          </button>
+        </div>
+
+        {mode === 'pay' && (
+          <div className="balance-panel">
+            <div className="seg">
+              <button
+                className={`choice-btn${method === 'mpesa' ? ' selected' : ''}`}
+                onClick={() => setMethod('mpesa')}
+                disabled={busy}
+              >
+                <span className="radio-dot" />
+                <PhoneIcon size={16} /> M-Pesa
+              </button>
+              <button
+                className={`choice-btn${method === 'card' ? ' selected' : ''}`}
+                onClick={() => setMethod('card')}
+                disabled={busy}
+              >
+                <span className="radio-dot" />
+                <CreditCardIcon size={16} /> Card
+              </button>
+            </div>
+            <div className="ext-pay">
+              {method === 'mpesa' && (
+                <div className="ext-phone">
+                  <PhoneIcon size={16} />
+                  <input
+                    type="tel"
+                    placeholder="07XX XXX XXX"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    disabled={busy}
+                  />
+                </div>
+              )}
+              <button className="btn-primary ext-pay-btn" onClick={payHere} disabled={busy}>
+                {phase === 'working'
+                  ? 'Starting…'
+                  : phase === 'waiting'
+                    ? 'Waiting for payment…'
+                    : `Pay ${amount}`}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === 'host' && (
+          <div className="balance-panel">
+            <p className="info-note" style={{ paddingTop: 0 }}>
+              Only tap this once you’ve paid the host <b>{amount}</b>. Your pickup code shows
+              straight away.
+            </p>
+            <div className="cancel-confirm" style={{ flexWrap: 'wrap' }}>
+              <button className="btn-primary" onClick={paidHost} disabled={busy}>
+                {busy ? 'Confirming…' : `Yes, I paid the host ${amount}`}
+              </button>
+              <button className="btn-secondary" onClick={() => setMode('')} disabled={busy}>
+                Not yet
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === 'problem' && (
+          <div className="balance-panel">
+            <p className="info-note" style={{ paddingTop: 0 }}>
+              Tell us what’s wrong. We’ll tell your host and open a chat with Ardena support.
+              Don’t pay the balance.
+            </p>
+            <div className="control" style={{ height: 'auto' }}>
+              <textarea
+                rows={3}
+                maxLength={2000}
+                placeholder="e.g. The car has a flat tyre and the fuel tank is empty"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+            <button
+              className="btn-primary"
+              style={{ marginTop: 'var(--sp-3)' }}
+              onClick={sendProblem}
+              disabled={busy || message.trim().length < 5}
+            >
+              {busy ? 'Sending…' : 'Report the problem'}
+            </button>
+          </div>
+        )}
+
+        {note && note !== 'done' && (
+          <p className="info-note" style={{ color: 'var(--success)', fontWeight: 700 }}>
+            {note}
+          </p>
+        )}
+        {error && (
+          <p className="info-note" style={{ color: 'var(--error)', fontWeight: 700 }}>
+            {error}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -478,6 +804,31 @@ export default function TripDetails() {
   const [cancelNote, setCancelNote] = useState('');
   const [receiptBusy, setReceiptBusy] = useState(false);
   const [error, setError] = useState('');
+  const [codes, setCodes] = useState(null);
+  const status = booking?.status;
+
+  // Handover codes (the pay-on-pickup actions below update them too).
+  useEffect(() => {
+    if (!['pending', 'confirmed', 'active'].includes(status)) return undefined;
+    let on = true;
+    getHandoverCodes(id)
+      .then((data) => {
+        if (on) setCodes(data);
+      })
+      .catch(() => {});
+    return () => {
+      on = false;
+    };
+  }, [id, status]);
+
+  const reloadBooking = () =>
+    getBooking(id)
+      .then((data) => setBooking(mapBooking(data)))
+      .catch(() => {});
+  const reloadCodes = () =>
+    getHandoverCodes(id)
+      .then(setCodes)
+      .catch(() => {});
 
   useEffect(() => {
     let on = true;
@@ -552,7 +903,10 @@ export default function TripDetails() {
   const host = liveCar?.host || booking.car.host;
   const hostFirstName = host.name.split(' ')[0];
   const hosting = hostingDuration(liveCar?.host.createdAt);
-  const cancellable = ['pending', 'confirmed'].includes(booking.status);
+  const balance = booking.paymentMode === 'pay_on_pickup' ? booking.payOnPickup : null;
+  // Once the renter has paid the host in person, cancelling is support's job (API: 409).
+  const paidHost = balance?.balance_status === 'paid_to_host';
+  const cancellable = ['pending', 'confirmed'].includes(booking.status) && !paidHost;
   const paid = ['confirmed', 'active', 'completed'].includes(booking.status);
   const bookedOn = fmtBookedOn(booking.createdAt);
   const depositLabel = DEPOSIT_STATUS_LABEL[booking.depositStatus];
@@ -670,18 +1024,37 @@ export default function TripDetails() {
                     {booking.dropoffTime ? ` · ${booking.dropoffTime}` : ''}
                   </b>
                 </div>
-                <div className="info-row">
-                  <span>
-                    <MapPinIcon size={17} /> Pickup point
-                  </span>
-                  <b>{booking.pickupLocation}</b>
-                </div>
-                <div className="info-row">
-                  <span>
-                    <MapPinIcon size={17} /> Return point
-                  </span>
-                  <b>{booking.dropoffLocation}</b>
-                </div>
+                {booking.delivery ? (
+                  <>
+                    <div className="info-row">
+                      <span>
+                        <CarIcon size={17} /> Delivered to
+                      </span>
+                      <b>{booking.delivery.address}</b>
+                    </div>
+                    <div className="info-row">
+                      <span>
+                        <MapPinIcon size={17} /> Collected from
+                      </span>
+                      <b>{booking.delivery.address}</b>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="info-row">
+                      <span>
+                        <MapPinIcon size={17} /> Pickup point
+                      </span>
+                      <b>{booking.pickupLocation}</b>
+                    </div>
+                    <div className="info-row">
+                      <span>
+                        <MapPinIcon size={17} /> Return point
+                      </span>
+                      <b>{booking.dropoffLocation}</b>
+                    </div>
+                  </>
+                )}
                 <div className="info-row">
                   <span>
                     <SteeringIcon size={17} /> Drive type
@@ -699,11 +1072,25 @@ export default function TripDetails() {
                 {booking.notes && (
                   <p className="info-note">Special requirements: {booking.notes}</p>
                 )}
+                {booking.delivery && <DeliveryMap delivery={booking.delivery} />}
               </div>
             </div>
 
+            {balance && ['confirmed', 'active'].includes(booking.status) && (
+              <PayOnPickupCard
+                booking={booking}
+                balance={balance}
+                onCodes={setCodes}
+                onPaid={() => {
+                  reloadBooking();
+                  reloadCodes();
+                }}
+                onProblem={(fresh) => setBooking(mapBooking(fresh))}
+              />
+            )}
+
             {['pending', 'confirmed', 'active'].includes(booking.status) && (
-              <HandoverCard bookingId={booking.id} />
+              <HandoverCard bookingId={booking.id} codes={codes} setCodes={setCodes} />
             )}
 
             {['confirmed', 'active'].includes(booking.status) && (
@@ -789,10 +1176,32 @@ export default function TripDetails() {
                     <b>{formatKES(booking.deposit)}</b>
                   </div>
                 )}
+                {booking.delivery && (
+                  <div className="info-row">
+                    <span>
+                      <CarIcon size={17} /> Delivery &amp; collection
+                    </span>
+                    <b>{booking.deliveryFee > 0 ? formatKES(booking.deliveryFee) : 'Free'}</b>
+                  </div>
+                )}
                 <div className="info-row">
                   <span>Total</span>
                   <b style={{ fontSize: 'var(--fs-md)' }}>{formatKES(booking.total)}</b>
                 </div>
+                {balance && (
+                  <>
+                    <div className="info-row">
+                      <span>Paid when booking</span>
+                      <b>{formatKES(balance.upfront_amount)}</b>
+                    </div>
+                    <div className="info-row">
+                      <span>
+                        {balance.balance_status === 'pending' ? 'To pay at pickup' : 'Paid at pickup'}
+                      </span>
+                      <b>{formatKES(balance.balance_amount)}</b>
+                    </div>
+                  </>
+                )}
                 {booking.depositStatus === 'partial_refund' && booking.depositRefunded != null && (
                   <p className="info-note">
                     {formatKES(booking.depositRefunded)} of the deposit was refunded.
@@ -859,6 +1268,15 @@ export default function TripDetails() {
               )}
             </div>
 
+            {paidHost && ['confirmed', 'active'].includes(booking.status) && (
+              <p className="widget-foot" style={{ marginTop: 20 }}>
+                You’ve paid the host, so this trip can’t be cancelled here. Need help?{' '}
+                <Link to="/messages" state={{ hostId: 'support' }} className="link">
+                  Message Ardena support
+                </Link>
+              </p>
+            )}
+
             {cancellable && (
               <div className="book-widget" style={{ marginTop: 20 }}>
                 {confirmCancel ? (
@@ -886,6 +1304,9 @@ export default function TripDetails() {
                           {cancelPreview.refund_percentage != null &&
                             ` (${Math.round(cancelPreview.refund_percentage * 100)}%)`}
                           .
+                          {cancelPreview.refund_policy_reason && (
+                            <> {cancelPreview.refund_policy_reason}</>
+                          )}
                         </>
                       ) : cancelPreview ? (
                         cancelPreview.refund_policy_reason ||

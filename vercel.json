@@ -3,9 +3,22 @@
     {
       "source": "/cars/:id",
       "destination": "/api/car?id=:id"
+    },
+    {
+      "source": "/payment/result",
+      "destination": "/index.html"
     }
   ],
   "headers": [
+    {
+      "source": "/payment/result",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
     {
       "source": "/.well-known/apple-app-site-association",
       "headers": [

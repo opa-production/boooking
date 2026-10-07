@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import * as api from '../api.js';
 import { EmptyState } from '../components.jsx';
 import logoMark from '../assets/logo.png';
 import { SendIcon, ChatIcon, MailIcon, PhoneIcon, ShieldIcon, ArrowLeftIcon } from '../icons.jsx';
 
-// Real client↔host chat plus the Ardena support conversation — same threads
-// as the app. No websocket; we fetch on open/send and poll while visible.
+// Real client↔host chat, chats with hired drivers (one per hire), plus the
+// Ardena support conversation — same threads as the app. No websocket; we
+// fetch on open/send and poll while visible.
 
 const POLL_MS = 15000;
 const SUPPORT_ID = 'support';
@@ -40,6 +41,35 @@ function mapConversation(c) {
     startedAt: c.created_at,
     messages: mapMessages(c.messages, 'client'),
   };
+}
+
+const DRIVER_PREFIX = 'drv:';
+const isDriverKey = (key) => typeof key === 'string' && key.startsWith(DRIVER_PREFIX);
+
+/** A driver-hire chat (GET /chauffeur-threads?role=client). Messages load on open. */
+function mapDriverThread(t) {
+  return {
+    hostId: DRIVER_PREFIX + t.booking_id,
+    hireId: t.booking_id,
+    isDriver: true,
+    hostName: t.name || 'Your driver',
+    hostAvatar: t.photo_url,
+    unread: (t.unread || 0) > 0,
+    lastMessageAt: t.last_at,
+    preview: t.last_text,
+    trip: t.trip,
+    startedAt: null,
+    messages: [],
+  };
+}
+
+function mapDriverMessages(list) {
+  return (list || []).map((m) => ({
+    id: m.id,
+    from: m.sender === 'client' ? 'me' : 'host',
+    text: m.text,
+    time: fmtMsgTime(m.created_at),
+  }));
 }
 
 function mapSupport(c) {
@@ -86,7 +116,11 @@ export default function Messages() {
   const [support, setSupport] = useState(mapSupport(null));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [activeHostId, setActiveHostId] = useState(state?.hostId ?? null);
+  const [activeHostId, setActiveHostId] = useState(
+    state?.driverHireId ? DRIVER_PREFIX + state.driverHireId : state?.hostId ?? null
+  );
+  const activeRef = useRef(activeHostId);
+  activeRef.current = activeHostId;
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   // Mobile only: the conversation list is a slide-in drawer over the chat.
@@ -94,23 +128,55 @@ export default function Messages() {
   const bodyRef = useRef(null);
   const tempIdRef = useRef(-1);
 
-  /** Merge fresh conversations, preserving avatars the single endpoint omits. */
+  /** Merge fresh conversations, preserving avatars the single endpoint omits
+   * and driver messages already loaded (the inbox only carries the last one). */
   const adoptConversations = useCallback((list) => {
     setThreads((prev) => {
       const prevByHost = new Map(prev.map((t) => [t.hostId, t]));
-      return list.map((t) => ({
-        ...t,
-        hostAvatar: t.hostAvatar || prevByHost.get(t.hostId)?.hostAvatar || null,
-      }));
+      return list.map((t) => {
+        const before = prevByHost.get(t.hostId);
+        return {
+          ...t,
+          hostAvatar: t.hostAvatar || before?.hostAvatar || null,
+          messages: t.isDriver && before?.messages.length ? before.messages : t.messages,
+        };
+      });
     });
   }, []);
 
+  const loadDriverMessages = useCallback((key) => {
+    const hireId = key.slice(DRIVER_PREFIX.length);
+    return api
+      .getChauffeurMessages(hireId)
+      .then((list) => {
+        const messages = mapDriverMessages(list);
+        setThreads((prev) =>
+          prev.map((t) => (t.hostId === key ? { ...t, messages, unread: false } : t))
+        );
+      })
+      .catch(() => {});
+  }, []);
+
   const refresh = useCallback(async () => {
-    const [nots, sup] = await Promise.all([
+    const [nots, sup, drivers] = await Promise.all([
       api.getConversations(),
       api.getSupportConversation().catch(() => null),
+      api.getChauffeurThreads().catch(() => []),
     ]);
     let list = (nots.conversations || []).map(mapConversation);
+    let driverList = (Array.isArray(drivers) ? drivers : []).map(mapDriverThread);
+    // "Message driver" on a hire with no messages yet: start its thread here.
+    if (state?.driverHireId && !driverList.some((t) => t.hireId === state.driverHireId)) {
+      driverList = [
+        mapDriverThread({
+          booking_id: state.driverHireId,
+          name: state.driverName,
+          photo_url: state.driverPhoto,
+          unread: 0,
+        }),
+        ...driverList,
+      ];
+    }
     if (state?.hostId && state.hostId !== SUPPORT_ID && !list.some((t) => t.hostId === state.hostId)) {
       try {
         const conv = await api.getConversationWithHost(state.hostId);
@@ -119,10 +185,13 @@ export default function Messages() {
         /* host gone — just show existing threads */
       }
     }
+    const time = (t) => (t.lastMessageAt ? new Date(t.lastMessageAt).getTime() : Infinity);
+    list = [...list, ...driverList].sort((a, b) => time(b) - time(a));
     adoptConversations(list);
     if (sup) setSupport(mapSupport(sup));
+    if (isDriverKey(activeRef.current)) loadDriverMessages(activeRef.current);
     return list;
-  }, [state?.hostId, adoptConversations]);
+  }, [state?.hostId, state?.driverHireId, adoptConversations, loadDriverMessages]);
 
   // Initial load
   useEffect(() => {
@@ -130,7 +199,11 @@ export default function Messages() {
     refresh()
       .then((list) => {
         if (!on) return;
-        if (activeHostId == null) setActiveHostId(list.length ? list[0].hostId : SUPPORT_ID);
+        if (activeHostId == null) {
+          const first = list.length ? list[0].hostId : SUPPORT_ID;
+          setActiveHostId(first);
+          if (isDriverKey(first)) loadDriverMessages(first);
+        }
       })
       .catch((e) => {
         if (on) {
@@ -168,6 +241,10 @@ export default function Messages() {
       return;
     }
     setThreads((prev) => prev.map((t) => (t.hostId === hostId ? { ...t, unread: false } : t)));
+    if (isDriverKey(hostId)) {
+      loadDriverMessages(hostId);
+      return;
+    }
     api
       .getConversationWithHost(hostId)
       .then((conv) => {
@@ -209,12 +286,20 @@ export default function Messages() {
       const sent =
         target === SUPPORT_ID
           ? await api.sendSupportMessage(text)
-          : await api.sendMessageToHost(target, text);
+          : isDriverKey(target)
+            ? await api.sendChauffeurMessage(target.slice(DRIVER_PREFIX.length), text)
+            : await api.sendMessageToHost(target, text);
       appendTo(target, (t) => ({
         ...t,
+        lastMessageAt: sent.created_at || t.lastMessageAt,
         messages: t.messages.map((m) =>
           m.id === tempId
-            ? { id: sent.id, from: 'me', text: sent.message, time: fmtMsgTime(sent.created_at) }
+            ? {
+                id: sent.id,
+                from: 'me',
+                text: sent.message ?? sent.text,
+                time: fmtMsgTime(sent.created_at),
+              }
             : m
         ),
       }));
@@ -324,7 +409,7 @@ export default function Messages() {
                   <span className={t.unread ? 'unread-preview' : undefined}>
                     {t.messages.length
                       ? t.messages[t.messages.length - 1].text
-                      : 'New conversation'}
+                      : t.preview || 'New conversation'}
                   </span>
                 </span>
                 <span className="msg-item-time">{fmtMsgTime(t.lastMessageAt)}</span>
@@ -422,6 +507,20 @@ export default function Messages() {
               </>
             ) : (
               <>
+                {thread.isDriver ? (
+                  <>
+                    <div className="car-meta" style={{ textAlign: 'center' }}>
+                      Your Ardena driver{thread.trip ? ` · ${thread.trip}` : ''}
+                    </div>
+                    <Link
+                      to={`/driver-hires/${thread.hireId}`}
+                      className="btn-secondary btn-block"
+                      style={{ marginTop: 'var(--sp-4)', textAlign: 'center' }}
+                    >
+                      View the hire
+                    </Link>
+                  </>
+                ) : (
                 <div className="car-meta" style={{ textAlign: 'center' }}>
                   Ardena host
                   {thread.startedAt
@@ -431,9 +530,11 @@ export default function Messages() {
                       })}`
                     : ''}
                 </div>
+                )}
                 <div className="notice" style={{ marginTop: 'var(--sp-4)', fontSize: 'var(--fs-xs)' }}>
                   <ChatIcon size={14} style={{ verticalAlign: '-2px', marginRight: 6 }} />
-                  Messages sync with the Ardena app — your host sees them there too.
+                  Messages sync with the Ardena app — your {thread.isDriver ? 'driver' : 'host'} sees
+                  them there too.
                 </div>
               </>
             )}

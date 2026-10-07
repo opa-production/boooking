@@ -88,24 +88,46 @@ export default function Confirmation() {
                 {formatDateLong(booking.dropoffDate)} · {booking.dropoffTime}
               </span>
             </div>
-            <div className="row">
-              <span>Pickup point</span>
-              <span>{booking.pickupLocation}</span>
-            </div>
-            <div className="row">
-              <span>Return point</span>
-              <span>{booking.dropoffLocation}</span>
-            </div>
+            {booking.delivery ? (
+              <div className="row">
+                <span>Delivered to &amp; collected from</span>
+                <span>{booking.delivery.address}</span>
+              </div>
+            ) : (
+              <>
+                <div className="row">
+                  <span>Pickup point</span>
+                  <span>{booking.pickupLocation}</span>
+                </div>
+                <div className="row">
+                  <span>Return point</span>
+                  <span>{booking.dropoffLocation}</span>
+                </div>
+              </>
+            )}
             {booking.deposit > 0 && (
               <div className="row">
                 <span>Refundable deposit</span>
                 <span>{formatKES(booking.deposit)}</span>
               </div>
             )}
-            <div className="row total">
-              <span>Paid</span>
-              <span>{formatKES(booking.total)}</span>
-            </div>
+            {booking.payOnPickup ? (
+              <>
+                <div className="row total">
+                  <span>Paid now</span>
+                  <span>{formatKES(booking.payOnPickup.upfront_amount)}</span>
+                </div>
+                <div className="row">
+                  <span>To pay at pickup</span>
+                  <span>{formatKES(booking.payOnPickup.balance_amount)}</span>
+                </div>
+              </>
+            ) : (
+              <div className="row total">
+                <span>Paid</span>
+                <span>{formatKES(booking.total)}</span>
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'flex', gap: 14, marginTop: 'var(--sp-5)', flexWrap: 'wrap' }}>
