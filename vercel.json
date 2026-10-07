@@ -1,4 +1,11 @@
 {
+  "redirects": [
+    {
+      "source": "/drive",
+      "destination": "/#/drive",
+      "permanent": false
+    }
+  ],
   "rewrites": [
     {
       "source": "/cars/:id",
