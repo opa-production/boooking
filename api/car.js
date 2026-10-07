@@ -14,7 +14,7 @@
 
 const API = 'https://api.ardena.xyz/api/v1';
 const SITE = 'https://booking.ardena.co.ke';
-const FALLBACK_IMAGE = `${SITE}/og-image.png`;
+const FALLBACK_IMAGE = `${SITE}/og-share.jpg`; // 1200×630 JPEG, ~12 KB
 const PREVIEWERS = /whatsapp|facebookexternalhit|facebot|twitterbot|telegrambot|slackbot|linkedinbot|discordbot|applebot|pinterest|skypeuripreview|googlebot|bingbot|embedly|redditbot/i;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -42,7 +42,6 @@ function previewPage(car, id) {
     : 'Rent a car in Kenya, or hire a verified chauffeur.';
   const resized = car ? shareImage(car.cover_image) : null;
   const image = resized || FALLBACK_IMAGE;
-  const size = resized ? { w: 1200, h: 630, type: 'image/jpeg' } : { w: 1553, h: 1150, type: 'image/png' };
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>${esc(title)} · Ardena</title>
@@ -54,9 +53,9 @@ function previewPage(car, id) {
 <meta property="og:description" content="${esc(description)}">
 <meta property="og:image" content="${esc(image)}">
 <meta property="og:image:secure_url" content="${esc(image)}">
-<meta property="og:image:type" content="${size.type}">
-<meta property="og:image:width" content="${size.w}">
-<meta property="og:image:height" content="${size.h}">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="${esc(name || 'Ardena')}">
 <meta property="og:locale" content="en_KE">
 <meta name="twitter:card" content="summary_large_image">

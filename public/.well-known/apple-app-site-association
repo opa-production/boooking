@@ -1,0 +1,17 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "UU5944LU7U.com.ardena.client"
+        ],
+        "components": [
+          {
+            "/": "/cars/*",
+            "comment": "Car share links"
+          }
+        ]
+      }
+    ]
+  }
+}

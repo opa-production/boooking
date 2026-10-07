@@ -96,3 +96,35 @@ rewrites that path to the function in `api/car.js`, which:
 Check it with `curl -A "WhatsApp/2.23" https://booking.ardena.co.ke/cars/<id>`
 (should print `og:` tags) or the Facebook Sharing Debugger. If Cloudflare's bot
 protection is on for the domain, allow these crawlers through.
+
+The default card image (site-wide, and for unknown cars) is `public/og-share.jpg`:
+1200×630 JPEG, the size WhatsApp, X and LinkedIn show as a large card.
+
+### Opening the Ardena app from a car link
+
+From app version 1.0.11, tapping a `/cars/:id` link on a phone with Ardena
+installed opens that car in the app instead of the browser.
+
+- **iPhone:** `public/.well-known/apple-app-site-association` (served as JSON by
+  `vercel.json`) lists the app (`UU5944LU7U.com.ardena.client`) for `/cars/*`.
+  Nothing else is needed.
+- **Android:** still to add. Create `public/.well-known/assetlinks.json` with
+  the SHA-256 fingerprints of the keys that sign the app:
+
+  ```json
+  [{
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.ardena.client",
+      "sha256_cert_fingerprints": [
+        "<Play Console → Test and release → App integrity → App signing key certificate → SHA-256>",
+        "<EAS keystore SHA-256 (for APKs installed outside Play): eas credentials -p android → Keystore>"
+      ]
+    }
+  }]
+  ```
+
+  Until it's there, Android opens these links in the browser, which still works.
+  Check it at `https://booking.ardena.co.ke/.well-known/assetlinks.json` and with
+  Google's Statement List tester.
