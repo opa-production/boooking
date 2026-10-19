@@ -1188,6 +1188,18 @@ export default function TripDetails() {
                   <span>Total</span>
                   <b style={{ fontSize: 'var(--fs-md)' }}>{formatKES(booking.total)}</b>
                 </div>
+                {booking.promo && (
+                  <>
+                    <div className="info-row">
+                      <span>Promo {booking.promo.code}</span>
+                      <b style={{ color: 'var(--success)' }}>− {formatKES(booking.promo.discount)}</b>
+                    </div>
+                    <div className="info-row">
+                      <span>You paid</span>
+                      <b>{formatKES(booking.total - booking.promo.discount)}</b>
+                    </div>
+                  </>
+                )}
                 {balance && (
                   <>
                     <div className="info-row">

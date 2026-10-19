@@ -250,6 +250,19 @@ export function deleteBookingRecord(bookingId) {
   return request(`/client/bookings/${bookingId}`, { method: 'DELETE', auth: true });
 }
 
+// ---------- promo codes (auth) ----------
+
+/** Put an affiliate promo code (e.g. AKEVIN24) on a pending booking. Returns the
+ * booking: amount_due_now drops and `promo` is { code, discount }. A bad code is
+ * an error whose message can be shown as is. */
+export function applyPromoCode(bookingId, code) {
+  return request(`/client/bookings/${bookingId}/promo-code`, { method: 'POST', body: { code }, auth: true });
+}
+
+export function removePromoCode(bookingId) {
+  return request(`/client/bookings/${bookingId}/promo-code`, { method: 'DELETE', auth: true });
+}
+
 // ---------- pay on pickup (auth) ----------
 
 /** Pay the rest of a pay-on-pickup booking: a saved M-Pesa method id, or null for card

@@ -261,6 +261,8 @@ export function mapBooking(b) {
     amountDueNow: b.amount_due_now ?? b.total_price,
     // { upfront_amount, balance_amount, balance_status, can_pay_balance_in_app, ... } | null
     payOnPickup: b.pay_on_pickup || null,
+    // Affiliate promo code: { code, discount } | null. total stays the full price.
+    promo: b.promo || null,
     cancellationReason: b.cancellation_reason,
     refundPolicyReason: b.refund_policy_reason,
     requiresHandoverCode: Boolean(b.requires_handover_code),

@@ -1826,7 +1826,8 @@ textarea {
   margin-bottom: 18px;
 }
 
-.field > label {
+.field > label,
+.promo-field form > label {
   display: block;
   font-size: var(--fs-xs);
   font-weight: 800;
@@ -6547,4 +6548,44 @@ a.trip-card:hover {
   .driver-hire-note {
     flex-wrap: wrap;
   }
+}
+
+/* ---------- promo code (Payment page) ---------- */
+
+.promo-field .link {
+  padding: 0;
+  border: 0;
+  cursor: pointer;
+}
+
+.promo-entry {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.promo-entry .control {
+  flex: 1;
+  min-width: 0;
+}
+
+.promo-entry .control input {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.promo-applied {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1.5px dashed var(--primary);
+  border-radius: 12px;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.breakdown .row.promo-row > span:last-child {
+  color: var(--success);
 }

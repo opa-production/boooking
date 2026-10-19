@@ -59,6 +59,12 @@ export default function Payment() {
   // server's. It's kept in the history entry: a reload or Back/Forward reuses it.
   const [booking, setBooking] = useState(state?.booking || null);
   const [createError, setCreateError] = useState('');
+  // Affiliate promo code: applied to the booking on the server, which returns
+  // the new amount_due_now. Not offered on pay on pickup.
+  const [promoOpen, setPromoOpen] = useState(false);
+  const [promoInput, setPromoInput] = useState('');
+  const [promoBusy, setPromoBusy] = useState(false);
+  const [promoError, setPromoError] = useState('');
   const creating = useRef(null);
   const cancelled = useRef(false);
   const wake = useRef(null);
@@ -135,6 +141,41 @@ export default function Payment() {
         : phase === 'failed'
           ? `Try again — pay ${amountText}`
           : `Pay ${amountText}`;
+
+  const promo = booking?.promo || null;
+
+  const updateBooking = (updated) => {
+    setBooking(updated);
+    navigate('.', { replace: true, state: { ...state, booking: updated } });
+  };
+
+  const applyPromo = async (e) => {
+    e.preventDefault();
+    if (!booking || promoBusy || !promoInput.trim()) return;
+    setPromoBusy(true);
+    setPromoError('');
+    try {
+      updateBooking(await api.applyPromoCode(booking.booking_id, promoInput.trim()));
+      setPromoInput('');
+    } catch (err) {
+      setPromoError(err.message || 'That promo code couldn’t be applied.');
+    } finally {
+      setPromoBusy(false);
+    }
+  };
+
+  const removePromo = async () => {
+    if (!booking || promoBusy) return;
+    setPromoBusy(true);
+    setPromoError('');
+    try {
+      updateBooking(await api.removePromoCode(booking.booking_id));
+    } catch (err) {
+      setPromoError(err.message || 'Couldn’t remove the promo code.');
+    } finally {
+      setPromoBusy(false);
+    }
+  };
 
   const finish = (status) => {
     if (!status) return; // left the page
@@ -297,6 +338,56 @@ export default function Payment() {
               </div>
             )}
 
+            {ready && !split && (
+              <div className="field promo-field">
+                {promo ? (
+                  <div className="promo-applied">
+                    <span>
+                      <b>{promo.code}</b> applied · {formatKES(promo.discount)} off
+                    </span>
+                    <button className="link" onClick={removePromo} disabled={busy || promoBusy}>
+                      Remove
+                    </button>
+                  </div>
+                ) : promoOpen ? (
+                  <form onSubmit={applyPromo}>
+                    <label htmlFor="promoCode">Promo code</label>
+                    <div className="promo-entry">
+                      <div className={`control${promoError ? ' err' : ''}`}>
+                        <input
+                          id="promoCode"
+                          type="text"
+                          placeholder="e.g. AKEVIN24"
+                          autoCapitalize="characters"
+                          autoComplete="off"
+                          spellCheck="false"
+                          maxLength={40}
+                          value={promoInput}
+                          disabled={busy || promoBusy}
+                          onChange={(e) => {
+                            setPromoInput(e.target.value.toUpperCase());
+                            setPromoError('');
+                          }}
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        className="btn-secondary"
+                        disabled={busy || promoBusy || !promoInput.trim()}
+                      >
+                        {promoBusy ? 'Applying…' : 'Apply'}
+                      </button>
+                    </div>
+                    {promoError && <span className="field-error">{promoError}</span>}
+                  </form>
+                ) : (
+                  <button className="link" onClick={() => setPromoOpen(true)} disabled={busy}>
+                    Have a promo code?
+                  </button>
+                )}
+              </div>
+            )}
+
             {phase === 'waiting' && (
               <div className="notice" style={{ marginTop: 0 }}>
                 <b>{statusText}</b> Waiting for confirmation…
@@ -429,12 +520,26 @@ export default function Payment() {
                         </div>
                       </>
                     ) : (
+                      <>
+                      {promo && (
+                        <>
+                          <div className="row">
+                            <span>Trip total</span>
+                            <span>{formatKES(booking.total_price)}</span>
+                          </div>
+                          <div className="row promo-row">
+                            <span>Promo {promo.code}</span>
+                            <span>− {formatKES(promo.discount)}</span>
+                          </div>
+                        </>
+                      )}
                       <div className="row total">
                         <span>Total due now</span>
                         <span key={totalDue} className="total-pop">
                           {formatKES(totalDue)}
                         </span>
                       </div>
+                      </>
                     )}
                     {booking.deposit_amount > 0 && (
                       <p className="breakdown-note">
