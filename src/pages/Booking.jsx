@@ -250,13 +250,24 @@ function BookingForm({ car }) {
   };
 
   return (
-    <div className="page">
+    <div className="page booking-page">
       <div className="container">
         <BackButton to={`/cars/${car.id}`} />
         <BookingSteps current={1} />
 
         <div className="booking-layout">
           <div className="form-card">
+            {/* phones: the car up top, since the summary card sits below the form */}
+            <div className="mini-car booking-car-top">
+              <CarPhoto car={car} className="pic" />
+              <div>
+                <b>{car.name}</b>
+                <div className="car-meta">
+                  {formatKES(car.pricePerDay)} / day · {car.locationName}
+                </div>
+              </div>
+            </div>
+
             <div className="field" style={{ position: 'relative' }} ref={calRef}>
               <label>Trip dates</label>
               <button

@@ -203,12 +203,6 @@ export function CarCard({ car }) {
     <Link to={`/cars/${car.id}`} className="car-card">
       <div className="car-photo">
         <CarPhoto car={car} />
-        {(delivery || car.payOnPickupAvailable) && (
-          <div className="car-badges">
-            {delivery && <span className="car-badge">{delivery}</span>}
-            {car.payOnPickupAvailable && <span className="car-badge">Pay on pickup</span>}
-          </div>
-        )}
         <button
           className="wish-btn"
           aria-label="Save to wishlist"
@@ -228,6 +222,12 @@ export function CarCard({ car }) {
         <div className="car-price">
           <b>{formatKES(car.pricePerDay)}</b> <span>/ day</span>
         </div>
+        {(delivery || car.payOnPickupAvailable) && (
+          <div className="car-perks">
+            {delivery && <span>{delivery}</span>}
+            {car.payOnPickupAvailable && <span>Pay on pickup</span>}
+          </div>
+        )}
       </div>
     </Link>
   );

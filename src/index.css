@@ -700,9 +700,30 @@ textarea {
  * the card's min-content. */
 .grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 28px 20px;
   margin-top: 34px;
+}
+
+/* phones: one full-width car per row, a little wider than tall */
+@media (max-width: 539px) {
+  .grid {
+    gap: 26px;
+  }
+
+  .grid .car-photo {
+    aspect-ratio: 3 / 2;
+  }
+
+  .grid .car-title {
+    font-size: var(--fs-lg);
+  }
+}
+
+@media (min-width: 540px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (min-width: 700px) {
@@ -2697,6 +2718,130 @@ textarea {
   display: grid;
   place-items: center;
   font-size: var(--fs-3xl);
+}
+
+/* the car header at the top of the form is for phones only */
+.booking-car-top {
+  display: none;
+}
+
+/* booking on phones: no boxed cards, just the page — sections split by
+ * hairlines, the car up top and the price details at the end */
+@media (max-width: 760px) {
+  .booking-page .booking-steps {
+    margin: 0 0 18px;
+  }
+
+  .booking-page .booking-layout {
+    gap: 0;
+  }
+
+  .booking-page .form-card {
+    padding: 0;
+    background: none;
+    box-shadow: none;
+  }
+
+  .booking-page .booking-car-top {
+    display: flex;
+    margin-bottom: 4px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--divider);
+  }
+
+  .booking-page .side-sticky .mini-car {
+    display: none;
+  }
+
+  .booking-page .booking-car-top .pic {
+    width: 56px;
+    height: 56px;
+    border-radius: 12px;
+  }
+
+  .booking-page .booking-car-top b {
+    font-size: var(--fs-md);
+  }
+
+  .booking-page .form-card > .field,
+  .booking-page .form-card > .two-col {
+    margin: 0;
+    padding: 18px 0;
+    border-bottom: 1px solid var(--divider);
+  }
+
+  .booking-page .two-col {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .booking-page .two-col .field {
+    margin: 0;
+  }
+
+  .booking-page .field > label {
+    margin-bottom: 10px;
+  }
+
+  .booking-page .seg {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .booking-page .seg .choice-btn {
+    min-width: 0;
+    padding: 12px 10px;
+    gap: 7px;
+    font-size: var(--fs-xs);
+  }
+
+  .booking-page .choice-btn .radio-dot {
+    display: none;
+  }
+
+  .booking-page .protect-list {
+    gap: 8px;
+  }
+
+  .booking-page .protect-card {
+    padding: 13px 14px;
+    gap: 12px;
+  }
+
+  .booking-page .notice {
+    margin: 18px 0 0 !important;
+    padding: 0;
+    box-shadow: none;
+    font-size: var(--fs-xs);
+    color: var(--hint);
+  }
+
+  .booking-page .form-card > .notice + .field {
+    margin-top: 18px;
+    border-top: 1px solid var(--divider);
+  }
+
+  .booking-page .side-sticky {
+    margin-top: 26px;
+  }
+
+  .booking-page .side-sticky .breakdown {
+    margin-top: 0;
+    padding: 0;
+    background: none;
+    box-shadow: none;
+  }
+
+  .booking-page .toggle-row {
+    padding: 0;
+    background: none;
+    box-shadow: none;
+  }
+
+  .booking-page .toggle-row:last-child {
+    margin-bottom: 0 !important;
+  }
 }
 
 /* payment methods */
@@ -5803,18 +5948,23 @@ a.trip-card:hover {
    Drive with Ardena (application) and Ardena Chauffeurs (hiring).
    ============================================================ */
 
-/* listing badges: top-left of the card photo, inline on the car page */
-.car-badges {
-  position: absolute;
-  top: 12px;
-  left: 12px;
+/* listing perks: a quiet text line under the price, so the photo stays clear */
+.car-perks {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  z-index: 2;
-  pointer-events: none;
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--success);
 }
 
+.car-perks span + span::before {
+  content: '·';
+  margin: 0 6px;
+  color: var(--hint);
+}
+
+/* inline badges on the car page */
 .car-badge {
   display: inline-flex;
   align-items: center;
